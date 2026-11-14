@@ -264,7 +264,8 @@ func (s *Server) match(fi fileInfo, f filter, terms []string) (hit, bool) {
 	return hit{n, score, snippets(body, lowBody, terms)}, true
 }
 
-var markers = strings.NewReplacer("<!-- cortex:start -->", "", "<!-- cortex:end -->", "")
+// markers are the comments Cortex writes around the conversation and the summary.
+var markers = regexp.MustCompile(`<!-- cortex:(start|end|summary:start hash=[0-9a-f]+|summary:end) -->`)
 
 const (
 	snipBefore = 80
@@ -311,7 +312,7 @@ func snippets(body, lower string, terms []string) []string {
 			hi++
 		}
 		end = hi
-		sn := strings.Join(strings.Fields(markers.Replace(src[lo:hi])), " ")
+		sn := strings.Join(strings.Fields(markers.ReplaceAllString(src[lo:hi], "")), " ")
 		if lo > 0 {
 			sn = "…" + sn
 		}

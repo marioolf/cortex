@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/marioolf/cortex/internal/session"
+	"github.com/marioolf/cortex/internal/summarize"
 	"github.com/marioolf/cortex/internal/vault"
 )
 
@@ -32,6 +33,9 @@ func (e *Engine) Ingest(s *session.Session, explicit bool) (string, error) {
 	cfg, red := e.cfg, e.red
 	e.mu.Unlock()
 	if !explicit && (cfg.Paused || !cfg.SourceEnabled(s.Source)) {
+		return IngestSkipped, nil
+	}
+	if summarize.InWorkDir(s.Cwd, summarize.WorkDir(e.path)) {
 		return IngestSkipped, nil
 	}
 	v, err := e.vault(cfg)

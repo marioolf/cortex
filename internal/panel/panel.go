@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -315,6 +316,47 @@ type configRequest struct {
 		Name     string `json:"name"`
 		Excluded bool   `json:"excluded"`
 	} `json:"project"`
+	Summaries *summariesRequest `json:"summaries"`
+}
+
+// summariesRequest is all the panel may change about summaries. There is no
+// field for the command, the idle time or the rate: a command settable here
+// would turn a leaked panel token into code execution, so it can only be
+// written by hand in the config file. Unknown fields are rejected.
+type summariesRequest struct {
+	Enabled  *bool     `json:"enabled"`
+	Tool     *string   `json:"tool"`
+	Projects *[]string `json:"projects"`
+}
+
+// checkSummaries refuses a request the engine could not honour, with a
+// message for the person: a tool that is not there, no tool at all.
+func (p *panel) checkSummaries(r *summariesRequest) error {
+	cur := p.e.Snapshot().Summaries
+	tool := cur.Tool
+	if r.Tool != nil {
+		tool = *r.Tool
+		switch {
+		case tool == "":
+		case tool == config.ToolCustom:
+			if !cur.CustomAvailable {
+				return errors.New(`there is no custom command in the config file; it can only be written there by hand`)
+			}
+		case !slices.ContainsFunc(cur.Presets, func(x engine.SummaryPreset) bool { return x.ID == tool && x.Available }):
+			return fmt.Errorf("%q is not installed (its program was not found on PATH) or is unknown", tool)
+		}
+	}
+	if r.Enabled != nil && *r.Enabled && tool == "" {
+		return errors.New("choose a tool first")
+	}
+	if r.Projects != nil {
+		for _, name := range *r.Projects {
+			if strings.TrimSpace(name) == "" {
+				return errors.New("project name is empty")
+			}
+		}
+	}
+	return nil
 }
 
 func (p *panel) config(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +385,14 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	changed := req.Paused != nil || req.Vault != nil || req.Source != nil || req.Project != nil
+	if req.Summaries != nil {
+		if err := p.checkSummaries(req.Summaries); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	changed := req.Paused != nil || req.Vault != nil || req.Source != nil || req.Project != nil || req.Summaries != nil
 	if changed {
 		err := p.e.Update(func(c *config.Config) {
 			if req.Paused != nil {
@@ -357,6 +406,17 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 			}
 			if pr := req.Project; pr != nil {
 				c.ExcludedProjects = toggle(c.ExcludedProjects, pr.Name, pr.Excluded)
+			}
+			if sm := req.Summaries; sm != nil {
+				if sm.Enabled != nil {
+					c.Summaries.Enabled = *sm.Enabled
+				}
+				if sm.Tool != nil {
+					c.Summaries.Tool = *sm.Tool
+				}
+				if sm.Projects != nil {
+					c.Summaries.Projects = slices.Clone(*sm.Projects)
+				}
 			}
 		})
 		if err != nil {

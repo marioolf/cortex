@@ -239,7 +239,13 @@ func (v *Vault) block(s *session.Session) string {
 			b.WriteString(" · " + m.Time.In(v.Loc).Format("2006-01-02 15:04"))
 		}
 		// A conversation that mentions our end marker must not cut the block short.
-		b.WriteString("\n\n" + strings.ReplaceAll(m.Text, endMarker, "<!-- cortex:end --&gt;") + "\n\n")
+		// Nor may it contain a summary marker, which would confuse the search for
+		// the summary block that sits before it.
+		text := strings.ReplaceAll(m.Text, endMarker, "<!-- cortex:end --&gt;")
+		text = strings.ReplaceAll(text, startMarker, "<!-- cortex:start --&gt;")
+		text = strings.ReplaceAll(text, summaryStartPrefix, "<!-- cortex:summary&#58;start")
+		text = strings.ReplaceAll(text, summaryEndMarker, "<!-- cortex:summary:end --&gt;")
+		b.WriteString("\n\n" + text + "\n\n")
 	}
 	b.WriteString(endMarker)
 	return b.String()

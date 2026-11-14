@@ -4,8 +4,10 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"sort"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"github.com/marioolf/cortex/internal/config"
 	"github.com/marioolf/cortex/internal/redact"
 	"github.com/marioolf/cortex/internal/session"
+	"github.com/marioolf/cortex/internal/summarize"
 	"github.com/marioolf/cortex/internal/vault"
 )
 
@@ -59,6 +62,7 @@ type State struct {
 	Sources    []SourceState  `json:"sources"`
 	Projects   []ProjectState `json:"projects"`
 	Chats      int            `json:"chats"` // sessions that belong to no project
+	Summaries  SummaryState   `json:"summaries"`
 }
 
 type seenSession struct{ source, project string }
@@ -87,6 +91,15 @@ type Engine struct {
 	// the start of every round. The collectors consider them read, so without
 	// this they would be lost. Touched only while holding run.
 	pending map[string]*session.Session
+
+	// Summaries (see summaries.go).
+	sum      sumState
+	sumWG    sync.WaitGroup
+	ctx      context.Context // cancelled by Stop: kills a running summary command
+	cancel   context.CancelFunc
+	now      func() time.Time // the clock of idle time, the rate limit and backoffs
+	lookPath func(string) (string, error)
+	runner   summarize.Runner
 }
 
 func New(configPath string, collectors []collector.Collector) (*Engine, error) {
@@ -107,7 +120,10 @@ func New(configPath string, collectors []collector.Collector) (*Engine, error) {
 		seen:     map[string]seenSession{},
 		detected: map[string]bool{},
 		pending:  map[string]*session.Session{},
+		now:      time.Now,
+		lookPath: exec.LookPath,
 	}
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	if e.path == "" {
 		if e.path, err = config.Path(); err != nil {
 			return nil, err
@@ -200,6 +216,7 @@ func (e *Engine) Sync() Stats {
 	e.errs = nil
 	e.mu.Unlock()
 
+	work := summarize.WorkDir(e.path)
 	var st Stats
 	v, err := e.vault(cfg)
 	if err != nil {
@@ -221,6 +238,9 @@ func (e *Engine) Sync() Stats {
 			return
 		}
 		delete(e.pending, key)
+		if res != vault.Detached {
+			e.remember(cfg, s.ID, session.Project(s.Cwd))
+		}
 		switch res {
 		case vault.Created:
 			st.Created++
@@ -246,6 +266,11 @@ func (e *Engine) Sync() Stats {
 			continue
 		}
 		c.Collect(func(s *session.Session) {
+			// The summary tools save sessions of their own, started in our work
+			// folder. Saving those would summarise the summaries, forever.
+			if summarize.InWorkDir(s.Cwd, work) {
+				return
+			}
 			project := session.Project(s.Cwd)
 			// Record before filtering: the panel lists excluded projects too.
 			e.mu.Lock()
@@ -266,6 +291,7 @@ func (e *Engine) Sync() Stats {
 	e.mu.Lock()
 	e.lastSync, e.lastStats = time.Now(), st
 	e.mu.Unlock()
+	e.scanSummaries(cfg, v)
 	return st
 }
 
@@ -294,6 +320,9 @@ func (e *Engine) Update(f func(*config.Config)) error {
 	f(cfg)
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault path is empty")
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 	red, err := redact.New(cfg.RedactPatterns)
 	if err != nil {
@@ -343,6 +372,8 @@ func clone(c *config.Config) *config.Config {
 	n.DisabledSources = slices.Clone(c.DisabledSources)
 	n.ExcludedProjects = slices.Clone(c.ExcludedProjects)
 	n.RedactPatterns = slices.Clone(c.RedactPatterns)
+	n.Summaries.Command = slices.Clone(c.Summaries.Command)
+	n.Summaries.Projects = slices.Clone(c.Summaries.Projects)
 	return &n
 }
 
@@ -359,9 +390,14 @@ func (e *Engine) Snapshot() State {
 		Sources:    []SourceState{},
 		Projects:   []ProjectState{},
 	}
+	// Summary failures outlive the round that clears e.errs.
+	e.sum.mu.Lock()
+	s.Errors = append(s.Errors, e.summaryErrors()...)
+	e.sum.mu.Unlock()
 	if s.Errors == nil {
 		s.Errors = []string{}
 	}
+	s.Summaries = e.summaryState()
 	if !e.lastSync.IsZero() {
 		s.LastSync = e.lastSync.Format(time.RFC3339)
 	}

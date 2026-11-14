@@ -53,6 +53,9 @@ const usage = `Usage:
   cortex import FILE [-vault DIR] [-config FILE]
                              save the conversations of a ChatGPT or claude.ai export
                              (the zip as downloaded, or its conversations.json)
+  cortex summarize NOTE [-vault DIR] [-config FILE]
+                             summarise one note now with the tool set in the config
+                             file (sends its text to that tool) and print the summary
   cortex mcp [-vault DIR] [-config FILE]
                              serve the vault to AI tools over MCP on stdin/stdout
   cortex version
@@ -76,6 +79,8 @@ func main() {
 		err = syncOnce(args)
 	case "import":
 		err = importExport(args, os.Stdout, os.Stderr)
+	case "summarize":
+		err = summarizeNote(args, os.Stdout, os.Stderr)
 	case "mcp":
 		err = serveMCP(args)
 	case "install":
@@ -192,6 +197,44 @@ func importExport(args []string, stdout, stderr io.Writer) error {
 	if sum.Failed > 0 {
 		return fmt.Errorf("%d failed", sum.Failed)
 	}
+	return nil
+}
+
+// summarizeNote summarises one note now. It is for trying a tool out: idle
+// time, the project selection and the rate limit do not apply, but a tool must
+// be configured. It sends the note's saved text to that tool.
+func summarizeNote(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("summarize", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	vaultDir := fs.String("vault", "", "vault directory for this run (default: the configured one, or ~/Cortex)")
+	configPath := fs.String("config", "", "config file (default: the one in the OS config directory)")
+	var note string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		note, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if note == "" && fs.NArg() == 1 {
+		note = fs.Arg(0)
+	} else if note == "" || fs.NArg() > 0 {
+		return errors.New("usage: cortex summarize NOTE [-vault DIR] [-config FILE]")
+	}
+	e, err := engine.New(*configPath, nil) // no collectors: nothing is read from the AI tools
+	if err != nil {
+		return err
+	}
+	defer e.Stop()
+	if *vaultDir != "" {
+		if err := e.OverrideVault(*vaultDir); err != nil {
+			return err
+		}
+	}
+	out, err := e.SummarizeNote(note)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, out)
 	return nil
 }
 
@@ -414,6 +457,7 @@ func run(args []string) error {
 	}
 	<-ctx.Done()
 	<-shutdown
+	e.Stop() // a summary command still running is killed
 	wg.Wait()
 
 	if handoff.Load() && inst != nil {

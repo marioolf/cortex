@@ -527,3 +527,35 @@ func TestNoteWithURLLine(t *testing.T) {
 		t.Errorf("read: %v\n%s", isErr, body)
 	}
 }
+
+// A note with a summary block is still found by its conversation and by its
+// summary, the title is still the first heading, snippets show no markers, and
+// read returns the note as it is, summary included.
+func TestNoteWithSummary(t *testing.T) {
+	root := t.TempDir()
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &session.Session{Source: "claude-code", ID: "sum-1", Cwd: "/work/orchard", Title: "Orchard pruning",
+		Messages: []session.Message{{Role: "user", Text: "When do I prune the quince tree?"}, {Role: "assistant", Text: "In late winter."}}}
+	if _, err := v.Write(s); err != nil {
+		t.Fatal(err)
+	}
+	_, hash, _ := v.ConversationText("sum-1")
+	if err := v.WriteSummary("sum-1", hash, "Test tool", "Decision: prune the medlar in spring."); err != nil {
+		t.Fatal(err)
+	}
+	c := start(t, root)
+	for _, q := range []string{"quince", "medlar"} {
+		text, isErr := c.tool("search", `{"query":"`+q+`"}`)
+		if isErr || !strings.Contains(text, "title: Orchard pruning") || strings.Contains(text, "cortex:") {
+			t.Fatalf("search %s: %v\n%s", q, isErr, text)
+		}
+	}
+	p := paths(func() string { s, _ := c.tool("search", `{"query":"quince"}`); return s }())
+	body, _ := c.tool("read", `{"note":"`+p[0]+`"}`)
+	if !strings.Contains(body, "## Summary") || !strings.Contains(body, "medlar") || !strings.Contains(body, "quince tree") {
+		t.Errorf("read:\n%s", body)
+	}
+}

@@ -86,6 +86,11 @@ ol.steps { margin: 6px 0; padding-left: 1.3em; }
 .banner { margin: 0 0 16px; padding: 12px 14px; border-left: 4px solid var(--warn); }
 .banner p { margin: 0 0 8px; overflow-wrap: anywhere; }
 #install-msg { min-height: 1.4em; }
+select {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; max-width: 100%;
+}
+#sum-status { min-height: 1.4em; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .track, .track::after { transition: none; } }
 </style>
 </head>
@@ -129,6 +134,26 @@ ol.steps { margin: 6px 0; padding-left: 1.3em; }
       <span class="name">Start Cortex when I log in</span>
       <span class="switch"><input id="autostart" type="checkbox" role="switch"><span class="track"></span></span>
     </label>
+  </div>
+
+  <h2>Summaries (optional)</h2>
+  <p class="muted" id="sum-intro"></p>
+  <div class="card box">
+    <label class="row" id="sum-enabled-row">
+      <span class="name">Summarise conversations of the selected projects</span>
+      <span class="switch"><input id="sum-enabled" type="checkbox" role="switch"><span class="track"></span></span>
+    </label>
+    <p class="muted" id="sum-none" hidden>No tool is available. Install Claude Code (command <code>claude</code>) or Codex CLI (command <code>codex</code>) so that it is found on your PATH, then reload this page. Or write your own command into the config file by hand (see the README, "Summaries"); it cannot be set from this page.</p>
+    <div id="sum-tool-box">
+      <label class="lbl" for="sum-tool">Tool</label>
+      <select id="sum-tool"></select>
+      <p class="muted" id="sum-cmd-label">Command that will run (it receives the conversation on its standard input, and only shows here; it cannot be edited here):</p>
+      <div class="snippet"><pre id="sum-cmd" tabindex="0" aria-labelledby="sum-cmd-label"></pre></div>
+    </div>
+    <h3 id="sum-projects-title">Projects to summarise</h3>
+    <p class="muted">Chats without a project are never summarised.</p>
+    <ul id="sum-projects" class="card" aria-labelledby="sum-projects-title"></ul>
+    <p id="sum-status" class="muted" role="status" aria-live="polite"></p>
   </div>
 
   <h2>Web chats</h2>
@@ -310,10 +335,49 @@ function render(s) {
   }
   chats.firstChild.children[1].textContent = plural(s.chats, "session", "sessions");
 
+  renderSummaries(s);
   $("autostart").checked = s.autostart;
   $("ext-code").value = s.extension.code || "";
   $("ext-port").textContent = "Port: " + s.extension.port + (s.extension.code ? "" : " (no pairing code yet; restart Cortex)");
   renderConnect(s);
+}
+
+// ---- Summaries ----
+function renderSummaries(s) {
+  const m = s.summaries;
+  $("sum-intro").textContent = "When a conversation in a selected project has been quiet for " + plural(m.idle_minutes, "minute", "minutes") +
+    ", Cortex sends its saved text to the tool below, on this computer, and stores the answer at the top of the note. " +
+    "That tool sends the text to its AI provider and uses your account and quota. Off by default.";
+
+  const choices = m.presets.filter((p) => p.available).map((p) => [p.id, p.name]);
+  if (m.custom_available) choices.push(["custom", "Custom command from the config file"]);
+  $("sum-none").hidden = choices.length > 0;
+  $("sum-tool-box").hidden = choices.length === 0;
+  const sel = $("sum-tool");
+  const want = ["", "Choose a tool"].concat(...choices).join("\u0001") + "\u0002" + m.tool;
+  if (sel.dataset.key !== want) {
+    sel.dataset.key = want;
+    const opts = [["", "Choose a tool"]].concat(choices);
+    // A tool that was chosen earlier and is no longer found stays visible, so the page does not lie.
+    if (m.tool && !opts.some((o) => o[0] === m.tool)) opts.push([m.tool, m.tool + " (not found)"]);
+    sel.replaceChildren(...opts.map(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; return o; }));
+    sel.value = m.tool;
+  }
+  $("sum-cmd").textContent = m.command.length ? m.command.map((a) => (a === "" || /[\s"']/.test(a)) ? JSON.stringify(a) : a).join(" ") : "(no tool chosen)";
+  const sw = $("sum-enabled");
+  sw.checked = m.enabled;
+  sw.disabled = !m.tool && !m.enabled;
+
+  const names = Array.from(new Set(s.projects.map((p) => p.name).concat(m.projects))).sort();
+  syncRows($("sum-projects"), names, (n) => n,
+    () => switchRow((li, on) => {
+      const cur = new Set(state.summaries.projects);
+      if (on) cur.add(li.dataset.key); else cur.delete(li.dataset.key);
+      change({ summaries: { projects: Array.from(cur).sort() } });
+    }),
+    (li, n) => setRow(li, n, "", m.projects.includes(n)));
+  const parts = [m.enabled ? "On." : "Off.", plural(m.queued, "conversation", "conversations") + " waiting", m.done_this_hour + " done in the last hour (at most " + m.max_per_hour + " per hour)."];
+  $("sum-status").textContent = parts.join(" ") + (m.last_error ? " Last problem: " + m.last_error : "");
 }
 
 // ---- Connect your AI tools ----
@@ -515,6 +579,8 @@ $("ext-regen").addEventListener("click", async () => {
 
 $("pause").addEventListener("click", () => change({ paused: !state.paused }));
 $("autostart").addEventListener("change", (e) => change({ autostart: e.target.checked }));
+$("sum-enabled").addEventListener("change", (e) => change({ summaries: { enabled: e.target.checked } }));
+$("sum-tool").addEventListener("change", (e) => change({ summaries: { tool: e.target.value } }));
 $("vault").addEventListener("input", (e) => { e.target.dataset.dirty = "1"; });
 $("vault-save").addEventListener("click", async () => {
   await change({ vault: $("vault").value });
