@@ -8,7 +8,10 @@ type Collector interface {
 	ID() string
 	// Detect returns the directories where this source keeps data; empty means not installed.
 	Detect() []string
-	// Collect calls fn once per session found. Unreadable sessions are
+	// Reset forgets any caching, so the next Collect reports everything again.
+	Reset()
+	// Collect calls fn once per session found. A collector may skip sessions
+	// that have not changed since its previous Collect. Unreadable sessions are
 	// reported through warn and skipped, never fatal.
 	Collect(fn func(*session.Session), warn func(error))
 }

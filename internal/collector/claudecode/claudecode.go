@@ -14,12 +14,22 @@ import (
 	"time"
 
 	"github.com/marioolf/cortex/internal/session"
+	"github.com/marioolf/cortex/internal/wsl"
 )
 
 const ID = "claude-code"
 
+type stamp struct {
+	mod  time.Time
+	size int64
+}
+
 type Collector struct {
 	Roots []string
+	// extraRoots is evaluated on every call because the set of running WSL
+	// distros changes while Cortex runs.
+	extraRoots func() []string
+	seen       map[string]stamp // transcript path -> what we last parsed
 }
 
 func New() *Collector {
@@ -30,14 +40,24 @@ func New() *Collector {
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots, filepath.Join(home, ".claude", "projects"))
 	}
-	return &Collector{Roots: roots}
+	return &Collector{Roots: roots, extraRoots: func() []string {
+		var r []string
+		for _, h := range wsl.Homes() {
+			r = append(r, filepath.Join(h, ".claude", "projects"))
+		}
+		return r
+	}}
 }
 
 func (c *Collector) ID() string { return ID }
 
 func (c *Collector) Detect() []string {
+	roots := c.Roots
+	if c.extraRoots != nil {
+		roots = append(roots[:len(roots):len(roots)], c.extraRoots()...)
+	}
 	var found []string
-	for _, r := range c.Roots {
+	for _, r := range roots {
 		if st, err := os.Stat(r); err == nil && st.IsDir() {
 			found = append(found, r)
 		}
@@ -45,16 +65,35 @@ func (c *Collector) Detect() []string {
 	return found
 }
 
+// Reset makes the next Collect parse every transcript again.
+func (c *Collector) Reset() { c.seen = nil }
+
+// Collect skips transcripts whose modification time and size are the same as
+// when they were last parsed; a long-running process would otherwise re-read
+// every transcript every round.
 func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
+	if c.seen == nil {
+		c.seen = map[string]stamp{}
+	}
 	for _, root := range c.Detect() {
 		// Subagent transcripts live one level deeper and are deliberately not matched.
 		files, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
 		for _, f := range files {
+			st, err := os.Stat(f)
+			if err != nil {
+				warn(fmt.Errorf("%s: %w", f, err))
+				continue
+			}
+			cur := stamp{st.ModTime(), st.Size()}
+			if prev, ok := c.seen[f]; ok && prev == cur {
+				continue
+			}
 			s, err := ParseFile(f)
 			if err != nil {
 				warn(fmt.Errorf("%s: %w", f, err))
 				continue
 			}
+			c.seen[f] = cur
 			if len(s.Messages) > 0 {
 				fn(s)
 			}

@@ -8,13 +8,12 @@ It runs locally and nothing leaves your machine.
 
 ## Status
 
-Early development. Only one thing works today: capturing Claude Code
-conversations with `cortex sync`.
+Early development. Cortex captures Claude Code conversations, either once with
+`cortex sync` or continuously in the background with `cortex run`, which also
+serves a local control panel.
 
 Planned, none of it implemented yet:
 
-- Background capture with a local control panel to turn sources and projects on
-  and off.
 - More sources: GitHub Copilot in VS Code, Codex, OpenCode, Cursor.
 - An MCP server so agents can search the vault.
 - Web chats (ChatGPT, claude.ai, Gemini) through export import and a browser
@@ -26,12 +25,48 @@ You need Go, at the version given in `go.mod`.
 
 ```
 go build -o cortex ./cmd/cortex
-./cortex sync
+./cortex
 ```
 
-`sync` reads the Claude Code transcripts in `~/.claude/projects` and writes one
-note per session. The default vault is `~/Cortex`; use `-vault DIR` to choose
-another folder. Running it again only updates what changed.
+Running `cortex` with no arguments is the same as `cortex run`. It saves every
+conversation once, then checks again every 30 seconds, and opens the control
+panel in your browser. The panel is served at `http://127.0.0.1:47821/` and
+only accepts connections from your own machine. Options for `run`:
+
+- `-no-browser`: do not open the panel.
+- `-port N`: use another port.
+- `-no-autostart`: see below.
+- `-config FILE`: use another config file.
+
+If Cortex is already running, starting it again just opens the panel.
+
+The panel shows the last sync and any warnings, and lets you:
+
+- pause and resume capturing;
+- change the vault folder, or open it in your file manager;
+- turn sources on and off;
+- turn projects on and off (conversations outside any project are always
+  saved);
+- choose whether Cortex starts when you log in.
+
+Turning something off stops capturing it. Notes already written are never
+deleted.
+
+The first time `run` starts (when there is no config file yet), it writes the
+default config and registers itself to start at login with `run -no-browser`:
+the registry's `Run` key on Windows, a launch agent in `~/Library/LaunchAgents`
+on macOS, an XDG autostart entry in `~/.config/autostart` on Linux. Pass
+`-no-autostart` to skip that, or turn it off in the panel at any time.
+
+When Cortex runs on Windows, it also reads the Claude Code transcripts in the
+home directories of WSL distros that are running at that moment. It does not
+start distros that are stopped.
+
+`cortex sync` does one round and exits. It reads the Claude Code transcripts in
+`~/.claude/projects` and writes one note per session. The default vault is
+`~/Cortex`; use `-vault DIR` to choose another folder for that run without
+saving it. Running it again only updates what changed. A paused Cortex does not
+sync.
 
 ## What you get
 
@@ -112,15 +147,22 @@ directory:
   "vault": "/home/me/notes/Cortex",
   "disabled_sources": ["claude-code"],
   "excluded_projects": ["secret-client"],
-  "redact_patterns": ["ACME-[0-9]{8}"]
+  "redact_patterns": ["ACME-[0-9]{8}"],
+  "paused": false
 }
 ```
 
-- `vault`: where notes are written (default `~/Cortex`; `-vault` overrides it).
-- `disabled_sources`: sources that `sync` skips.
+- `vault`: where notes are written (default `~/Cortex`; `sync -vault` overrides
+  it for one run).
+- `disabled_sources`: sources that are not captured.
 - `excluded_projects`: project names whose sessions are not saved.
 - `redact_patterns`: extra regular expressions to redact, on top of the
   built-in ones.
+- `paused`: capture nothing until set back to `false`.
+
+The panel writes this file when you change a setting. Edits made by hand while
+Cortex is running are picked up the next time it starts. `-config FILE` on
+`run` and `sync` uses a different file.
 
 ## License
 

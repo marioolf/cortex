@@ -66,7 +66,14 @@ func Open(root string) (*Vault, error) {
 			return nil, err
 		}
 	}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	return v, v.Reindex()
+}
+
+// Reindex rebuilds the session-to-note index from the files on disk.
+func (v *Vault) Reindex() error {
+	v.index = map[string]string{}
+	root := v.Root
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable entries are simply not indexed
 		}
@@ -80,7 +87,6 @@ func Open(root string) (*Vault, error) {
 		}
 		return nil
 	})
-	return v, err
 }
 
 var sessionLine = regexp.MustCompile(`(?m)^session: (".*")\r?$`)
@@ -110,7 +116,16 @@ func sessionID(path string) string {
 // existing one. Everything outside the markers is left exactly as it is.
 func (v *Vault) Write(s *session.Session) (Result, error) {
 	block := v.block(s)
-	if path, ok := v.index[s.ID]; ok {
+	path, ok := v.index[s.ID]
+	if ok && !exists(path) {
+		// The vault stays open across rounds, so the user may have renamed
+		// the note since we indexed it. Look again before making a duplicate.
+		if err := v.Reindex(); err != nil {
+			return 0, err
+		}
+		path, ok = v.index[s.ID]
+	}
+	if ok {
 		old, err := os.ReadFile(path)
 		if err == nil {
 			i := bytes.Index(old, []byte(startMarker))
@@ -124,7 +139,7 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 			}
 			return Updated, writeAtomic(path, updated)
 		}
-		// The indexed file vanished mid-run; fall through and recreate it.
+		// The file vanished again just now; fall through and recreate it.
 	}
 
 	project := session.Project(s.Cwd)
@@ -144,7 +159,7 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 		date = t.In(v.Loc).Format("2006-01-02")
 	}
 	// The short ID keeps names unique; fall back to the full one on a clash.
-	path := filepath.Join(dir, fmt.Sprintf("%s %s (%s).md", date, title, shortID(s.ID)))
+	path = filepath.Join(dir, fmt.Sprintf("%s %s (%s).md", date, title, shortID(s.ID)))
 	if exists(path) {
 		path = filepath.Join(dir, fmt.Sprintf("%s %s (%s).md", date, title, safeName(s.ID, 80)))
 	}

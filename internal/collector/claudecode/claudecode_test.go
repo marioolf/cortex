@@ -1,8 +1,13 @@
 package claudecode
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/marioolf/cortex/internal/session"
 )
 
 // Synthetic transcript covering the entry shapes the parser must handle.
@@ -57,5 +62,49 @@ func TestCustomTitleWins(t *testing.T) {
 {"type":"ai-title","aiTitle":"auto again"}`))
 	if s.Title != "mine" {
 		t.Errorf("title = %q", s.Title)
+	}
+}
+
+func TestCollectSkipsUnchanged(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "-work-demo")
+	os.MkdirAll(dir, 0o755)
+	file := filepath.Join(dir, "s1.jsonl")
+	line := `{"type":"user","cwd":"/work/demo","message":{"content":"hello"}}` + "\n"
+	if err := os.WriteFile(file, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := &Collector{Roots: []string{root}}
+	count := func() int {
+		n := 0
+		c.Collect(func(*session.Session) { n++ }, func(err error) { t.Error(err) })
+		return n
+	}
+
+	if n := count(); n != 1 {
+		t.Fatalf("first collect = %d, want 1", n)
+	}
+	if n := count(); n != 0 {
+		t.Errorf("unchanged collect = %d, want 0", n)
+	}
+	// A different size counts as a change even if the mod time is restored.
+	mod := time.Now().Add(-time.Hour)
+	os.WriteFile(file, []byte(line+line), 0o644)
+	os.Chtimes(file, mod, mod)
+	if n := count(); n != 1 {
+		t.Errorf("grown collect = %d, want 1", n)
+	}
+	// Same size, new mod time.
+	later := mod.Add(time.Minute)
+	os.Chtimes(file, later, later)
+	if n := count(); n != 1 {
+		t.Errorf("touched collect = %d, want 1", n)
+	}
+	c.Reset()
+	if n := count(); n != 1 {
+		t.Errorf("after Reset = %d, want 1", n)
+	}
+	if n := (&Collector{Roots: []string{root}}).Detect(); len(n) != 1 {
+		t.Errorf("Detect = %v", n)
 	}
 }

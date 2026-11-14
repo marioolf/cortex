@@ -16,6 +16,7 @@ type Config struct {
 	DisabledSources  []string `json:"disabled_sources"`
 	ExcludedProjects []string `json:"excluded_projects"`
 	RedactPatterns   []string `json:"redact_patterns"`
+	Paused           bool     `json:"paused"`
 }
 
 func Path() (string, error) {
@@ -59,4 +60,33 @@ func (c *Config) SourceEnabled(id string) bool { return !slices.Contains(c.Disab
 
 func (c *Config) ProjectExcluded(name string) bool {
 	return name != "" && slices.Contains(c.ExcludedProjects, name)
+}
+
+// Save writes the config atomically: a crash must not leave a truncated file
+// that would stop Cortex from starting.
+func (c *Config) Save(path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

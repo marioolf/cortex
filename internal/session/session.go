@@ -34,15 +34,20 @@ func (s *Session) Started() time.Time {
 }
 
 // A home directory is where people start chats about anything; it is not a project.
-var homeDir = regexp.MustCompile(`^(/home/[^/]+|/Users/[^/]+|[A-Za-z]:/Users/[^/]+|/root|)$`)
+// That includes a Windows home seen from WSL (/mnt/c/Users/name).
+var homeDir = regexp.MustCompile(`^(/home/[^/]+|/Users/[^/]+|[A-Za-z]:/Users/[^/]+|/mnt/[A-Za-z]/Users/[^/]+|/root|)$`)
+
+// Tools that start in the Windows directory (a shell opened as administrator,
+// for instance) are not working on a project either.
+var winSystemDir = regexp.MustCompile(`(?i)^([a-z]:|/mnt/[a-z])/windows(/|$)`)
 
 // Project returns the project name for a working directory: the name of the
 // enclosing git repository if there is one, else the directory's own name.
-// It returns "" when cwd is empty or a home directory. Both / and \ paths are
+// It returns "" when cwd is empty, a home directory or inside a Windows system directory. Both / and \ paths are
 // accepted regardless of the OS we run on, since sessions may come from WSL.
 func Project(cwd string) string {
 	p := strings.TrimRight(strings.ReplaceAll(cwd, `\`, "/"), "/")
-	if homeDir.MatchString(p) {
+	if homeDir.MatchString(p) || winSystemDir.MatchString(p) {
 		return ""
 	}
 	name := p[strings.LastIndex(p, "/")+1:]

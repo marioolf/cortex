@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="cortex-token" content="{{TOKEN}}">
+<title>Cortex</title>
+<style nonce="{{NONCE}}">
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1f; --muted: #66666c; --line: #deded9;
+  --accent: #2563d6; --accent-text: #ffffff; --warn: #a15c00; --track: #b9b9b3;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a; --card: #1f1f23; --text: #ececee; --muted: #9a9aa2; --line: #34343a;
+    --accent: #6c9bff; --accent-text: #0b1530; --warn: #e0a64a; --track: #55555c;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+h1 { margin: 0; font-size: 1.6rem; }
+h2 { margin: 28px 0 8px; font-size: 1rem; text-transform: none; }
+p { margin: 6px 0; }
+.muted { color: var(--muted); font-size: 0.92rem; }
+.warn { color: var(--warn); }
+button {
+  font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 14px; cursor: pointer;
+}
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:hover { filter: brightness(0.96); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+input[type=text] {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; flex: 1 1 14em; min-width: 0;
+}
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.field { display: flex; gap: 8px; flex-wrap: wrap; }
+ul { list-style: none; margin: 0; padding: 0; }
+li, .row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+li + li { border-top: 1px solid var(--line); }
+label.row { cursor: pointer; }
+li > label.row { padding: 0; flex: 1; }
+.name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.meta { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
+.empty { padding: 10px 14px; color: var(--muted); }
+.switch { position: relative; width: 42px; height: 24px; flex: none; }
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.track { position: absolute; inset: 0; border-radius: 12px; background: var(--track); transition: background 0.15s; pointer-events: none; }
+.track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+  border-radius: 50%; background: #fff; transition: transform 0.15s;
+}
+.switch input:checked + .track { background: var(--accent); }
+.switch input:checked + .track::after { transform: translateX(18px); }
+.switch input:focus-visible + .track { outline: 3px solid var(--accent); outline-offset: 2px; }
+details { margin-top: 8px; }
+details ul { padding: 4px 0; }
+details li { padding: 4px 14px; font-size: 0.88rem; overflow-wrap: anywhere; }
+#msg { min-height: 1.4em; }
+@media (prefers-reduced-motion: reduce) { .track, .track::after { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Cortex</h1>
+    <button id="pause" type="button" class="primary">Pause</button>
+  </header>
+
+  <p id="status" aria-live="polite">Loading...</p>
+  <p id="result" class="muted"></p>
+  <details id="errors" hidden>
+    <summary id="errors-summary"></summary>
+    <ul id="errors-list" class="card"></ul>
+  </details>
+  <p id="msg" class="warn" role="alert"></p>
+
+  <h2>Vault</h2>
+  <div class="field">
+    <input id="vault" type="text" aria-label="Vault folder" spellcheck="false" autocomplete="off">
+    <button id="vault-save" type="button">Save</button>
+    <button id="vault-open" type="button">Open folder</button>
+  </div>
+
+  <h2>Sources</h2>
+  <ul id="sources" class="card"></ul>
+
+  <h2>Projects</h2>
+  <ul id="projects" class="card"></ul>
+  <ul id="chats" class="card" hidden></ul>
+
+  <h2>Startup</h2>
+  <div class="card">
+    <label class="row">
+      <span class="name">Start Cortex when I log in</span>
+      <span class="switch"><input id="autostart" type="checkbox" role="switch"><span class="track"></span></span>
+    </label>
+  </div>
+
+  <p class="muted">Turning something off stops capturing it. Notes already written are never deleted.</p>
+</main>
+<script nonce="{{NONCE}}">
+"use strict";
+const token = document.querySelector('meta[name="cortex-token"]').content;
+const SOURCE_NAMES = { "claude-code": "Claude Code" };
+const $ = (id) => document.getElementById(id);
+let state = null;
+
+function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+
+async function call(path, body) {
+  const opts = { headers: { "X-Cortex-Token": token } };
+  if (body !== undefined) {
+    opts.method = "POST";
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed (" + res.status + ")");
+  return data;
+}
+
+async function load() {
+  try { render(await call("/api/state")); $("msg").textContent = ""; }
+  catch (e) { $("msg").textContent = "Cannot reach Cortex: " + e.message; }
+}
+
+async function change(body) {
+  try { render(await call("/api/config", body)); $("msg").textContent = ""; }
+  catch (e) { $("msg").textContent = e.message; if (state) render(state); }
+}
+
+// Rows are updated in place so a keyboard user does not lose focus on every poll.
+function syncRows(list, items, key, build, update) {
+  const have = new Map();
+  for (const li of Array.from(list.children)) have.set(li.dataset.key, li);
+  const keep = new Set(items.map(key));
+  for (const [k, li] of have) if (!keep.has(k)) li.remove();
+  let prev = null;
+  for (const item of items) {
+    let li = have.get(key(item));
+    if (!li) { li = build(item); li.dataset.key = key(item); }
+    update(li, item);
+    const at = prev ? prev.nextSibling : list.firstChild;
+    if (li !== at) list.insertBefore(li, at);
+    prev = li;
+  }
+}
+
+function switchRow(onChange) {
+  const li = document.createElement("li");
+  const label = document.createElement("label");
+  label.className = "row";
+  const name = document.createElement("span"); name.className = "name";
+  const meta = document.createElement("span"); meta.className = "meta";
+  const sw = document.createElement("span"); sw.className = "switch";
+  const input = document.createElement("input");
+  input.type = "checkbox"; input.setAttribute("role", "switch");
+  const track = document.createElement("span"); track.className = "track";
+  sw.append(input, track);
+  label.append(name, meta, sw);
+  li.append(label);
+  input.addEventListener("change", () => onChange(li, input.checked));
+  return li;
+}
+
+function setRow(li, nameText, metaText, checked) {
+  const [name, meta, sw] = li.firstChild.children;
+  name.textContent = nameText;
+  meta.textContent = metaText;
+  sw.firstChild.checked = checked;
+}
+
+function render(s) {
+  state = s;
+  document.title = s.paused ? "Cortex (paused)" : "Cortex";
+  $("pause").textContent = s.paused ? "Resume" : "Pause";
+
+  let status = s.paused ? "Paused. Nothing is being captured." : "Running.";
+  status += s.last_sync ? " Last sync: " + new Date(s.last_sync).toLocaleString() + "." : " Not synced yet.";
+  $("status").textContent = status;
+  const r = s.last_result;
+  $("result").textContent = s.last_sync
+    ? "Last round: " + r.created + " created, " + r.updated + " updated, " + r.unchanged + " unchanged" + (r.detached ? ", " + r.detached + " left alone" : "") + "."
+    : "";
+
+  const errs = s.errors || [];
+  $("errors").hidden = errs.length === 0;
+  $("errors-summary").textContent = plural(errs.length, "warning", "warnings") + " (most recent)";
+  const el = $("errors-list");
+  el.replaceChildren(...errs.map((e) => { const li = document.createElement("li"); li.textContent = e; return li; }));
+
+  const vault = $("vault");
+  if (document.activeElement !== vault && vault.dataset.dirty !== "1") vault.value = s.vault;
+
+  const src = $("sources");
+  syncRows(src, s.sources, (x) => x.id, (x) => switchRow((li, on) => change({ source: { id: li.dataset.key, enabled: on } })),
+    (li, x) => setRow(li, SOURCE_NAMES[x.id] || x.id,
+      (x.detected ? "" : "not found on this computer, ") + plural(x.sessions, "session", "sessions"), x.enabled));
+
+  const prj = $("projects");
+  syncRows(prj, s.projects, (x) => x.name, (x) => switchRow((li, on) => change({ project: { name: li.dataset.key, excluded: !on } })),
+    (li, x) => setRow(li, x.name, plural(x.sessions, "session", "sessions"), !x.excluded));
+  if (s.projects.length === 0) {
+    if (!prj.querySelector(".empty")) { const e = document.createElement("li"); e.className = "empty"; e.textContent = "No projects yet."; prj.append(e); }
+  } else {
+    const e = prj.querySelector(".empty"); if (e) e.remove();
+  }
+
+  const chats = $("chats");
+  chats.hidden = false;
+  if (!chats.firstChild) {
+    const li = document.createElement("li");
+    const n = document.createElement("span"); n.className = "name"; n.textContent = "Chats without a project";
+    const m = document.createElement("span"); m.className = "meta";
+    li.append(n, m); chats.append(li);
+  }
+  chats.firstChild.children[1].textContent = plural(s.chats, "session", "sessions");
+
+  $("autostart").checked = s.autostart;
+}
+
+$("pause").addEventListener("click", () => change({ paused: !state.paused }));
+$("autostart").addEventListener("change", (e) => change({ autostart: e.target.checked }));
+$("vault").addEventListener("input", (e) => { e.target.dataset.dirty = "1"; });
+$("vault-save").addEventListener("click", async () => {
+  await change({ vault: $("vault").value });
+  if (!$("msg").textContent) delete $("vault").dataset.dirty;
+});
+$("vault-open").addEventListener("click", async () => {
+  try { await call("/api/open-vault", {}); } catch (e) { $("msg").textContent = e.message; }
+});
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

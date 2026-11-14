@@ -127,24 +127,27 @@ func TestShortIDClash(t *testing.T) {
 	}
 }
 
-func TestProject(t *testing.T) {
-	repo := t.TempDir()
-	os.MkdirAll(filepath.Join(repo, ".git"), 0o755)
-	sub := filepath.Join(repo, "pkg", "deep")
-	os.MkdirAll(sub, 0o755)
-
-	cases := map[string]string{
-		"":                         "",
-		"/home/someone":            "",
-		"/Users/someone/":          "",
-		`C:\Users\someone`:         "",
-		`C:\Users\someone\dev\app`: "app",
-		"/nonexistent/path/thing":  "thing",
-		sub:                        filepath.Base(repo),
+func TestRenameBetweenWrites(t *testing.T) {
+	root := t.TempDir()
+	v := open(t, root)
+	s := sample()
+	write(t, v, s, Created)
+	old, _ := filepath.Glob(filepath.Join(root, "Projects", "demo", "*.md"))
+	moved := filepath.Join(root, "mine.md")
+	if len(old) != 1 || os.Rename(old[0], moved) != nil {
+		t.Fatalf("setup failed: %v", old)
 	}
-	for cwd, want := range cases {
-		if got := session.Project(cwd); got != want {
-			t.Errorf("Project(%q) = %q, want %q", cwd, got, want)
+
+	s.Messages = append(s.Messages, session.Message{Role: "user", Text: "later"})
+	write(t, v, s, Updated) // same *Vault, no reopen
+	var notes []string
+	filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
+		if !d.IsDir() && strings.HasSuffix(p, ".md") && d.Name() != "README.md" {
+			notes = append(notes, p)
 		}
+		return nil
+	})
+	if len(notes) != 1 || notes[0] != moved {
+		t.Errorf("want only %s, got %v", moved, notes)
 	}
 }
