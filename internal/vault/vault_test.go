@@ -151,3 +151,85 @@ func TestRenameBetweenWrites(t *testing.T) {
 		t.Errorf("want only %s, got %v", moved, notes)
 	}
 }
+
+func TestLongNamesStayWithinLimits(t *testing.T) {
+	root := t.TempDir()
+	v := open(t, root)
+	long := strings.Repeat("😀", 70)
+	a, b := sample(), sample()
+	a.Title, a.Cwd = long, "/work/"+long
+	// Same short ID and a long full ID force the fallback name.
+	a.ID = "a1b2c3d4-" + strings.Repeat("x", 120)
+	b.Title, b.Cwd = long, a.Cwd
+	b.ID = "a1b2c3d4-" + strings.Repeat("y", 120)
+	write(t, v, a, Created)
+	write(t, v, b, Created)
+
+	var n int
+	filepath.WalkDir(filepath.Join(root, "Projects"), func(p string, d os.DirEntry, _ error) error {
+		if d.IsDir() && p != filepath.Join(root, "Projects") && len(d.Name()) > 100 {
+			t.Errorf("folder name is %d bytes", len(d.Name()))
+		}
+		if !d.IsDir() {
+			n++
+			if len(d.Name()) > 200 {
+				t.Errorf("file name is %d bytes", len(d.Name()))
+			}
+		}
+		return nil
+	})
+	if n != 2 {
+		t.Errorf("want 2 notes, got %d", n)
+	}
+}
+
+func TestSafeName(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"a\x7fb", 50, "a b"},
+		{"re‮v‏e⁦al", 50, "re v e al"},
+		{"😀😀😀", 9, "😀😀"}, // never splits a character
+		{"abc def", 5, "abc d"},
+		{"abc def", 4, "abc"},
+		{"..x..", 50, "x"},
+	}
+	for _, c := range cases {
+		if got := safeName(c.in, c.max); got != c.want {
+			t.Errorf("safeName(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+	}
+}
+
+func TestNotesInHiddenFoldersAreFound(t *testing.T) {
+	for _, dir := range []string{".archive", ".trash"} {
+		root := t.TempDir()
+		v := open(t, root)
+		s := sample()
+		write(t, v, s, Created)
+		old, _ := filepath.Glob(filepath.Join(root, "Projects", "demo", "*.md"))
+		if len(old) != 1 {
+			t.Fatalf("setup failed: %v", old)
+		}
+		os.MkdirAll(filepath.Join(root, dir), 0o755)
+		moved := filepath.Join(root, dir, "note.md")
+		os.Rename(old[0], moved)
+
+		s.Messages = append(s.Messages, session.Message{Role: "user", Text: "later"})
+		write(t, open(t, root), s, Updated) // a later run: the note is updated where it lies
+		if left, _ := filepath.Glob(filepath.Join(root, "Projects", "demo", "*.md")); len(left) != 0 {
+			t.Errorf("%s: a duplicate was created: %v", dir, left)
+		}
+		data, _ := os.ReadFile(moved)
+		if !strings.Contains(string(data), "later") {
+			t.Errorf("%s: moved note was not updated", dir)
+		}
+
+		// Once it is gone for good (trash emptied) the next change writes it again.
+		os.Remove(moved)
+		s.Messages = append(s.Messages, session.Message{Role: "user", Text: "again"})
+		write(t, open(t, root), s, Created)
+	}
+}

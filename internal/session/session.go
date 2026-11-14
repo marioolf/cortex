@@ -3,10 +3,14 @@ package session
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
+
+	"github.com/marioolf/cortex/internal/wsl"
 )
 
 type Message struct {
@@ -41,20 +45,75 @@ var homeDir = regexp.MustCompile(`^(/home/[^/]+|/Users/[^/]+|[A-Za-z]:/Users/[^/
 // for instance) are not working on a project either.
 var winSystemDir = regexp.MustCompile(`(?i)^([a-z]:|/mnt/[a-z])/windows(/|$)`)
 
+// Where Project looks for a .git directory. Tests replace them.
+var (
+	onWindows = runtime.GOOS == "windows"
+	wslRoots  = wsl.Roots
+)
+
 // Project returns the project name for a working directory: the name of the
 // enclosing git repository if there is one, else the directory's own name.
-// It returns "" when cwd is empty, a home directory or inside a Windows system directory. Both / and \ paths are
+// It returns "" when cwd is empty, a home directory, a drive or filesystem
+// root, or inside a Windows system directory. Both / and \ paths are
 // accepted regardless of the OS we run on, since sessions may come from WSL.
 func Project(cwd string) string {
-	p := strings.TrimRight(strings.ReplaceAll(cwd, `\`, "/"), "/")
-	if homeDir.MatchString(p) || winSystemDir.MatchString(p) {
+	if strings.TrimSpace(cwd) == "" {
 		return ""
 	}
-	name := p[strings.LastIndex(p, "/")+1:]
+	// Clean first so that "/tmp/.." or "/a/b/." never yield a project named ".." or ".".
+	p := strings.TrimRight(path.Clean(strings.ReplaceAll(cwd, `\`, "/")), "/")
+	last := p[strings.LastIndex(p, "/")+1:]
+	if homeDir.MatchString(p) || winSystemDir.MatchString(p) || driveRoot.MatchString(p) || last == "." || last == ".." {
+		return ""
+	}
 	for dir := p; !homeDir.MatchString(dir) && strings.Contains(dir, "/"); dir = dir[:strings.LastIndex(dir, "/")] {
-		if _, err := os.Stat(filepath.Join(filepath.FromSlash(dir), ".git")); err == nil {
+		if hasGit(dir) {
 			return dir[strings.LastIndex(dir, "/")+1:]
 		}
 	}
-	return name
+	return last
+}
+
+var driveRoot = regexp.MustCompile(`^[A-Za-z]:$`)
+
+// hasGit reports whether dir (slash-separated) holds a .git entry. On Windows a
+// POSIX path comes from a WSL session; it does not exist on the host, so it is
+// looked up under the root of each running distro instead.
+func hasGit(dir string) bool {
+	if onWindows && strings.HasPrefix(dir, "/") && !strings.HasPrefix(dir, "//") {
+		for _, root := range wslRoots() {
+			if exists(filepath.Join(root, filepath.FromSlash(dir), ".git")) {
+				return true
+			}
+		}
+		return false
+	}
+	return exists(filepath.Join(filepath.FromSlash(dir), ".git"))
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+// maxToolLine is the longest a tool-call line may be, in characters.
+const maxToolLine = 120
+
+// ShortenToolLines cuts every tool-call line ("> `Name` ...") of text to
+// maxToolLine characters plus an ellipsis. It must run after redaction: cutting
+// first could leave a prefix of a secret that no redaction rule recognises.
+func ShortenToolLines(text string) string {
+	if !strings.Contains(text, "> `") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if !strings.HasPrefix(l, "> `") {
+			continue
+		}
+		if r := []rune(l); len(r) > maxToolLine {
+			lines[i] = string(r[:maxToolLine]) + "…"
+		}
+	}
+	return strings.Join(lines, "\n")
 }

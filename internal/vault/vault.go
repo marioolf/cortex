@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/marioolf/cortex/internal/session"
 )
@@ -31,7 +32,13 @@ This folder is written by Cortex. Each note is one conversation with an AI tool.
 - ` + "`Chats/<source>/`" + `: everything else.
 
 Cortex only rewrites the text between the ` + "`cortex:start`" + ` and ` + "`cortex:end`" + ` markers of
-each note. Anything you write outside them is kept. You can rename or move notes.
+each note. Anything you write outside them is kept. You can rename or move notes,
+also into hidden folders such as ` + "`.archive`" + `. If you delete a note, Cortex writes it
+again the next time its conversation changes or Cortex restarts, unless Obsidian
+is set to move deleted files to its own ` + "`.trash`" + ` folder inside this vault: then
+Cortex keeps updating the note in the trash and does not write a new one, until
+the trash is emptied. To stop capturing something for good, turn its project or
+source off in the Cortex panel, or remove the markers from the note.
 
 ## For AI agents reading this folder
 
@@ -77,9 +84,8 @@ func (v *Vault) Reindex() error {
 		if err != nil {
 			return nil // unreadable entries are simply not indexed
 		}
-		if d.IsDir() && strings.HasPrefix(d.Name(), ".") && path != root {
-			return filepath.SkipDir
-		}
+		// Hidden folders are walked too: a note moved to .archive or deleted
+		// into Obsidian's .trash is still the note for its session.
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {
 			if id := sessionID(path); id != "" {
 				v.index[id] = path
@@ -143,25 +149,29 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 	}
 
 	project := session.Project(s.Cwd)
-	dir := filepath.Join(v.Root, "Chats", safeName(s.Source, 60))
+	dir := filepath.Join(v.Root, "Chats", safeName(s.Source, maxDirName))
 	if project != "" {
-		dir = filepath.Join(v.Root, "Projects", safeName(project, 60))
+		dir = filepath.Join(v.Root, "Projects", safeName(project, maxDirName))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
-	}
-	title := safeName(s.Title, 60)
-	if title == "" {
-		title = "Untitled"
 	}
 	date := "undated"
 	if t := s.Started(); !t.IsZero() {
 		date = t.In(v.Loc).Format("2006-01-02")
 	}
 	// The short ID keeps names unique; fall back to the full one on a clash.
-	path = filepath.Join(dir, fmt.Sprintf("%s %s (%s).md", date, title, shortID(s.ID)))
+	// The title gets what is left of the budget when the longer ID is used, so
+	// both variants fit.
+	fullID := safeName(s.ID, 80)
+	title := safeName(s.Title, maxFileName-len(date)-len(fullID)-nameOverhead)
+	if title == "" {
+		title = "Untitled"
+	}
+	name := func(id string) string { return fmt.Sprintf("%s %s (%s).md", date, title, id) }
+	path = filepath.Join(dir, name(shortID(s.ID)))
 	if exists(path) {
-		path = filepath.Join(dir, fmt.Sprintf("%s %s (%s).md", date, title, safeName(s.ID, 80)))
+		path = filepath.Join(dir, name(fullID))
 	}
 
 	var b strings.Builder
@@ -206,23 +216,43 @@ func (v *Vault) block(s *session.Session) string {
 	return b.String()
 }
 
-var unsafeChars = regexp.MustCompile(`[\\/:*?"<>|#^\[\]\x00-\x1f]+`)
+// Name limits in bytes: file systems cap a name at 255 bytes, and Obsidian,
+// sync tools and backups want some room left.
+const (
+	maxFileName = 200
+	maxDirName  = 100
+	// nameOverhead is what a note name has besides date, title and ID: " ", " (", ")", ".md".
+	nameOverhead = 7
+)
 
-// safeName makes s usable as a file name on every OS and as an Obsidian link target.
+// Besides the characters no OS accepts: DEL and the Unicode bidi and format
+// controls, which let a title spoof how a name reads.
+var unsafeChars = regexp.MustCompile(`[\\/:*?"<>|#^\[\]\x00-\x1f\x7f\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}]+`)
+
+// safeName makes s usable as a file name on every OS and as an Obsidian link
+// target, at most max bytes long.
 func safeName(s string, max int) string {
 	s = strings.Join(strings.Fields(unsafeChars.ReplaceAllString(s, " ")), " ")
-	if r := []rune(s); len(r) > max {
-		s = strings.TrimSpace(string(r[:max]))
-	}
+	s = strings.TrimSpace(cutBytes(s, max))
 	return strings.Trim(s, ". ") // Windows rejects trailing dots and spaces
 }
 
-func shortID(id string) string {
-	id = safeName(id, 80)
-	if len(id) > 8 {
-		return id[:8]
+// cutBytes shortens s to at most max bytes without splitting a character.
+func cutBytes(s string, max int) string {
+	if max < 0 {
+		max = 0
 	}
-	return id
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
+}
+
+func shortID(id string) string {
+	return strings.Trim(cutBytes(safeName(id, 80), 8), ". ")
 }
 
 func exists(path string) bool {

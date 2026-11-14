@@ -3,6 +3,7 @@ package wsl
 import (
 	"reflect"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -40,5 +41,42 @@ func TestParseDistros(t *testing.T) {
 func TestHomeGlob(t *testing.T) {
 	if got, want := homeGlob("Ubuntu"), `\\wsl.localhost\Ubuntu\home\*`; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRootOf(t *testing.T) {
+	if got, want := rootOf("Ubuntu"), `\\wsl.localhost\Ubuntu`; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCacheReusesResultForTTL(t *testing.T) {
+	now := time.Unix(1000, 0)
+	calls := 0
+	c := &distroCache{
+		ttl:   20 * time.Second,
+		now:   func() time.Time { return now },
+		fetch: func() []string { calls++; return []string{"Ubuntu"} },
+	}
+	for i := 0; i < 8; i++ {
+		c.get()
+	}
+	if calls != 1 {
+		t.Fatalf("fetched %d times within the ttl, want 1", calls)
+	}
+	now = now.Add(21 * time.Second)
+	c.get()
+	if calls != 2 {
+		t.Errorf("fetched %d times after the ttl, want 2", calls)
+	}
+}
+
+func TestCacheKeepsAnEmptyResult(t *testing.T) {
+	calls := 0
+	c := &distroCache{ttl: time.Minute, now: time.Now, fetch: func() []string { calls++; return nil }}
+	c.get()
+	c.get()
+	if calls != 1 {
+		t.Errorf("an empty result was fetched %d times, want 1", calls)
 	}
 }

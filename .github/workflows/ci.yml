@@ -24,7 +24,12 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
-      - run: go build -o dist/ ./cmd/cortex
+      - name: Build
+        if: matrix.os != 'windows-latest'
+        run: go build -o dist/ ./cmd/cortex
+      - name: Build (Windows, no console window)
+        if: matrix.os == 'windows-latest'
+        run: go build -ldflags "-H windowsgui" -o dist/ ./cmd/cortex
       - uses: actions/upload-artifact@v4
         with:
           name: cortex-${{ matrix.os }}

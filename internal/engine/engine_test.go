@@ -61,7 +61,7 @@ func notes(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
 	filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
-		if !d.IsDir() && strings.HasSuffix(p, ".md") && d.Name() != "README.md" {
+		if d != nil && !d.IsDir() && strings.HasSuffix(p, ".md") && d.Name() != "README.md" {
 			out = append(out, p)
 		}
 		return nil
@@ -184,5 +184,189 @@ func TestErrorsAreCapped(t *testing.T) {
 	}
 	if n := len(e.Snapshot().Errors); n != maxErrors {
 		t.Errorf("errors = %d", n)
+	}
+}
+
+func TestNewDoesNotCreateTheVault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	cfgPath := filepath.Join(t.TempDir(), "config.json") // no file: the default vault applies
+	e, err := New(cfgPath, []collector.Collector{&fake{sessions: []session.Session{mk("a1", "/work/alpha")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(t.TempDir(), "other")
+	if err := e.OverrideVault(other); err != nil {
+		t.Fatal(err)
+	}
+	if st := e.Sync(); st.Created != 1 {
+		t.Fatalf("stats = %+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Cortex")); !os.IsNotExist(err) {
+		t.Errorf("the default vault was created (err = %v)", err)
+	}
+}
+
+func TestPausedSyncDoesNotCreateTheVault(t *testing.T) {
+	f := &fake{}
+	e, _, root := setup(t, f)
+	e.Update(func(c *config.Config) { c.Paused = true })
+	e.Sync()
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Errorf("vault exists while paused (err = %v)", err)
+	}
+}
+
+func TestFailedWriteIsRetriedAndReportedEveryRound(t *testing.T) {
+	// The fake yields its session once, like a collector that has marked it read.
+	f := &onceFake{fake: fake{sessions: []session.Session{mk("a1", "/work/alpha")}}}
+	e, _, root := setup(t, &f.fake)
+	e.cols = []collector.Collector{f}
+	// A file where the Projects folder should go makes the write fail.
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	obstacle := filepath.Join(root, "Projects")
+	if err := os.WriteFile(obstacle, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for round := 1; round <= 3; round++ {
+		st := e.Sync()
+		if st.Failed != 1 || st.Created != 0 {
+			t.Fatalf("round %d: stats = %+v", round, st)
+		}
+		if errs := e.Snapshot().Errors; len(errs) != 1 || !strings.Contains(errs[0], "a1") {
+			t.Fatalf("round %d: errors = %v", round, errs)
+		}
+	}
+
+	os.Remove(obstacle)
+	if st := e.Sync(); st.Created != 1 || st.Failed != 0 {
+		t.Fatalf("after the obstacle is gone: %+v", st)
+	}
+	if n := len(notes(t, root)); n != 1 {
+		t.Errorf("notes = %d", n)
+	}
+	if f.resets != 0 {
+		t.Errorf("collectors were reset %d times", f.resets)
+	}
+	if st := e.Sync(); st.Unchanged != 0 || st.Failed != 0 || len(e.pending) != 0 {
+		t.Errorf("a written session stayed pending: %+v", st)
+	}
+}
+
+func TestPendingDroppedWhenTurnedOff(t *testing.T) {
+	for name, off := range map[string]func(*config.Config){
+		"project": func(c *config.Config) { c.ExcludedProjects = []string{"alpha"} },
+		"source":  func(c *config.Config) { c.DisabledSources = []string{"fake"} },
+	} {
+		f := &onceFake{fake: fake{sessions: []session.Session{mk("a1", "/work/alpha")}}}
+		e, _, root := setup(t, &f.fake)
+		e.cols = []collector.Collector{f}
+		os.MkdirAll(root, 0o755)
+		obstacle := filepath.Join(root, "Projects")
+		os.WriteFile(obstacle, nil, 0o644)
+		e.Sync()
+		if len(e.pending) != 1 {
+			t.Fatalf("%s: pending = %d", name, len(e.pending))
+		}
+		// Update clears pending itself; put it back to test the per-round check.
+		e.cfg.ExcludedProjects, e.cfg.DisabledSources = nil, nil
+		cfg := clone(e.cfg)
+		off(cfg)
+		e.cfg = cfg
+		os.Remove(obstacle)
+		if st := e.Sync(); st.Created != 0 || len(e.pending) != 0 {
+			t.Errorf("%s: stats = %+v, pending = %d", name, st, len(e.pending))
+		}
+		if n := len(notes(t, root)); n != 0 {
+			t.Errorf("%s: wrote %d notes for a session turned off", name, n)
+		}
+	}
+}
+
+func TestUpdateClearsPending(t *testing.T) {
+	f := &fake{sessions: []session.Session{mk("a1", "/work/alpha")}}
+	e, _, root := setup(t, f)
+	os.MkdirAll(root, 0o755)
+	os.WriteFile(filepath.Join(root, "Projects"), nil, 0o644)
+	e.Sync()
+	if len(e.pending) != 1 {
+		t.Fatalf("pending = %d", len(e.pending))
+	}
+	if err := e.Update(func(c *config.Config) { c.Paused = true }); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.pending) != 0 {
+		t.Errorf("pending = %d after Update", len(e.pending))
+	}
+}
+
+// onceFake yields its sessions only on the first Collect after a Reset.
+type onceFake struct {
+	fake
+	done bool
+}
+
+func (o *onceFake) Reset() { o.fake.Reset(); o.done = false }
+func (o *onceFake) Collect(fn func(*session.Session), warn func(error)) {
+	if o.done {
+		return
+	}
+	o.done = true
+	o.fake.Collect(fn, warn)
+}
+
+func TestUpdateKeepsHandEdits(t *testing.T) {
+	e, cfgPath, _ := setup(t, &fake{})
+	// The user edits the file while Cortex runs.
+	edited := &config.Config{Vault: filepath.Join(t.TempDir(), "v"), ExcludedProjects: []string{"hand"}, RedactPatterns: []string{"ACME-[0-9]+"}}
+	if err := edited.Save(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Update(func(c *config.Config) { c.Paused = true }); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := config.LoadFile(cfgPath)
+	if !got.Paused || len(got.ExcludedProjects) != 1 || got.ExcludedProjects[0] != "hand" || got.Vault != edited.Vault || len(got.RedactPatterns) != 1 {
+		t.Errorf("hand edits lost: %+v", got)
+	}
+
+	// A file that parses but holds an invalid pattern does not block the panel.
+	os.WriteFile(cfgPath, []byte(`{"vault": "`+edited.Vault+`", "redact_patterns": ["("]}`), 0o600)
+	if err := e.Update(func(c *config.Config) { c.Paused = false }); err != nil {
+		t.Fatalf("invalid pattern on disk blocks Update: %v", err)
+	}
+	if got, _ := config.LoadFile(cfgPath); got.Paused || len(got.RedactPatterns) != 1 || got.RedactPatterns[0] != "ACME-[0-9]+" {
+		t.Errorf("after invalid-pattern fallback: %+v", got)
+	}
+	e.Update(func(c *config.Config) { c.Paused = true })
+
+	// A broken file falls back to what is in memory.
+	os.WriteFile(cfgPath, []byte("{not json"), 0o600)
+	if err := e.Update(func(c *config.Config) { c.Paused = false }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := config.LoadFile(cfgPath); got.Paused || got.ExcludedProjects[0] != "hand" {
+		t.Errorf("fallback = %+v", got)
+	}
+}
+
+func TestToolLinesShortenedAfterRedaction(t *testing.T) {
+	// The secret straddles the 120-character mark: cutting first would leave
+	// a prefix that no rule matches.
+	line := "> `Bash` " + strings.Repeat("x", 120-len("> `Bash` ")-8) + " AKIAABCDEFGHIJKLMNOP"
+	s := mk("a1", "/work/alpha")
+	s.Messages[0].Text = line
+	e, _, root := setup(t, &fake{sessions: []session.Session{s}})
+	e.Sync()
+	b, _ := os.ReadFile(notes(t, root)[0])
+	if strings.Contains(string(b), "AKIA") {
+		t.Errorf("part of the key survived:\n%s", b)
+	}
+	if !strings.Contains(string(b), "[REDACT") { // the mask itself may be cut short
+		t.Errorf("no redaction mark:\n%s", b)
 	}
 }

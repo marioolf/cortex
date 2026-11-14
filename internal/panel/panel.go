@@ -18,6 +18,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/marioolf/cortex/internal/autostart"
 	"github.com/marioolf/cortex/internal/config"
@@ -36,12 +38,27 @@ type Options struct {
 	AutostartEnabled func() bool
 	SetAutostart     func(on bool) error
 	Open             func(target string) error // opens a folder or URL in the OS
+	Quit             func()                    // stops the whole process; nil hides nothing, the request just fails
+	Now              func() time.Time          // clock for the autostart cache; nil means time.Now
 }
+
+// Header marks every response as coming from Cortex, so that a second instance
+// can tell our port from some other program's.
+const Header = "X-Cortex"
+
+// autostartTTL is how long the autostart setting is reused: the page polls
+// /api/state, and on Windows each lookup spawns reg.exe.
+const autostartTTL = 30 * time.Second
 
 type panel struct {
 	e     *engine.Engine
 	token string
 	opt   Options
+
+	mu        sync.Mutex
+	autostart bool
+	autoAt    time.Time
+	haveAuto  bool
 }
 
 func New(e *engine.Engine, token string, opt Options) http.Handler {
@@ -59,12 +76,16 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	if opt.Open == nil {
 		opt.Open = Open
 	}
-	p := &panel{e, token, opt}
+	if opt.Now == nil {
+		opt.Now = time.Now
+	}
+	p := &panel{e: e, token: token, opt: opt}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.page)
 	mux.HandleFunc("GET /api/state", p.state)
 	mux.HandleFunc("POST /api/config", p.config)
 	mux.HandleFunc("POST /api/open-vault", p.openVault)
+	mux.HandleFunc("POST /api/quit", p.quit)
 	return p.guard(mux)
 }
 
@@ -73,6 +94,7 @@ func (p *panel) guard(next http.Handler) http.Handler {
 	hosts := []string{fmt.Sprintf("127.0.0.1:%d", p.opt.Port), fmt.Sprintf("localhost:%d", p.opt.Port)}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
+		h.Set(Header, "1")
 		h.Set("Cache-Control", "no-store")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
@@ -113,8 +135,19 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 
 func (p *panel) snapshot() engine.State {
 	s := p.e.Snapshot()
-	s.Autostart = p.opt.AutostartEnabled()
+	s.Autostart = p.autostartEnabled(false)
 	return s
+}
+
+// autostartEnabled returns the cached setting, looking it up again when it is
+// older than autostartTTL or when fresh is set.
+func (p *panel) autostartEnabled(fresh bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if fresh || !p.haveAuto || p.opt.Now().Sub(p.autoAt) >= autostartTTL {
+		p.autostart, p.autoAt, p.haveAuto = p.opt.AutostartEnabled(), p.opt.Now(), true
+	}
+	return p.autostart
 }
 
 func (p *panel) state(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +220,7 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "autostart: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		p.autostartEnabled(true) // show the new value now, not in 30 seconds
 	}
 	if changed {
 		go p.e.Sync() // so the panel shows the effect without waiting for the next tick
@@ -211,6 +245,16 @@ func (p *panel) openVault(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// quit is how the user stops Cortex when it runs without a console window.
+func (p *panel) quit(w http.ResponseWriter, r *http.Request) {
+	if p.opt.Quit == nil {
+		jsonError(w, "not available", http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	go p.opt.Quit() // after the response is on its way
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -219,6 +263,19 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// Running reports whether url is served by a Cortex panel: whatever status it
+// answers with, it carries our header. Anything else (no listener, another
+// program) is false.
+func Running(url string, timeout time.Duration) bool {
+	c := http.Client{Timeout: timeout}
+	resp, err := c.Get(url)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.Header.Get(Header) != ""
 }
 
 // Open shows a folder or URL with the OS default handler.

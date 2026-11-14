@@ -4,13 +4,55 @@ package wsl
 
 import (
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf16"
 )
 
 // Homes returns the home directories of running distros as UNC paths, such as
-// \\wsl.localhost\Ubuntu\home\mario. It returns nil when there are none, and
+// \\wsl.localhost\Ubuntu\home\alice. It returns nil when there are none, and
 // always on systems other than Windows.
-func Homes() []string { return homes() }
+func Homes() []string { return homes(running.get()) }
+
+// Roots returns the root of each running distro as a UNC path, such as
+// \\wsl.localhost\Ubuntu. Same caveats as Homes.
+func Roots() []string {
+	var roots []string
+	for _, d := range running.get() {
+		roots = append(roots, rootOf(d))
+	}
+	return roots
+}
+
+func rootOf(distro string) string { return `\\wsl.localhost\` + distro }
+
+// cacheTTL is how long the list of running distros is reused: Homes and Roots
+// are called several times per sync round and each lookup spawns wsl.exe.
+const cacheTTL = 20 * time.Second
+
+// distroCache remembers the result of fetch for ttl. The clock and fetch are
+// fields so tests need neither wsl.exe nor a sleep.
+type distroCache struct {
+	ttl   time.Duration
+	now   func() time.Time
+	fetch func() []string
+
+	mu    sync.Mutex
+	at    time.Time
+	names []string
+	have  bool
+}
+
+var running = &distroCache{ttl: cacheTTL, now: time.Now, fetch: listDistros}
+
+func (c *distroCache) get() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.have || c.now().Sub(c.at) >= c.ttl {
+		c.names, c.at, c.have = c.fetch(), c.now(), true
+	}
+	return c.names
+}
 
 // parseDistros decodes the output of `wsl.exe -l -q --running`. wsl.exe writes
 // UTF-16LE, usually with a byte order mark, and CRLF line endings.

@@ -13,23 +13,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marioolf/cortex/internal/collector"
 	"github.com/marioolf/cortex/internal/session"
 	"github.com/marioolf/cortex/internal/wsl"
 )
 
 const ID = "claude-code"
 
-type stamp struct {
-	mod  time.Time
-	size int64
-}
-
 type Collector struct {
 	Roots []string
 	// extraRoots is evaluated on every call because the set of running WSL
 	// distros changes while Cortex runs.
 	extraRoots func() []string
-	seen       map[string]stamp // transcript path -> what we last parsed
+	seen       collector.Seen
 }
 
 func New() *Collector {
@@ -66,26 +62,22 @@ func (c *Collector) Detect() []string {
 }
 
 // Reset makes the next Collect parse every transcript again.
-func (c *Collector) Reset() { c.seen = nil }
+func (c *Collector) Reset() { c.seen.Reset() }
 
 // Collect skips transcripts whose modification time and size are the same as
 // when they were last parsed; a long-running process would otherwise re-read
 // every transcript every round.
 func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
-	if c.seen == nil {
-		c.seen = map[string]stamp{}
-	}
 	for _, root := range c.Detect() {
 		// Subagent transcripts live one level deeper and are deliberately not matched.
 		files, _ := filepath.Glob(filepath.Join(root, "*", "*.jsonl"))
 		for _, f := range files {
-			st, err := os.Stat(f)
+			changed, err := c.seen.Changed(f)
 			if err != nil {
 				warn(fmt.Errorf("%s: %w", f, err))
 				continue
 			}
-			cur := stamp{st.ModTime(), st.Size()}
-			if prev, ok := c.seen[f]; ok && prev == cur {
+			if !changed {
 				continue
 			}
 			s, err := ParseFile(f)
@@ -93,7 +85,7 @@ func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
 				warn(fmt.Errorf("%s: %w", f, err))
 				continue
 			}
-			c.seen[f] = cur
+			c.seen.Mark(f)
 			if len(s.Messages) > 0 {
 				fn(s)
 			}
@@ -240,9 +232,6 @@ func toolLine(b block) string {
 	for _, k := range []string{"description", "command", "file_path", "path", "pattern", "query", "url", "skill", "prompt"} {
 		if v, ok := b.Input[k].(string); ok && strings.TrimSpace(v) != "" {
 			v, _, _ = strings.Cut(strings.TrimSpace(v), "\n")
-			if r := []rune(v); len(r) > 120 {
-				v = string(r[:120]) + "…"
-			}
 			return line + " " + v
 		}
 	}

@@ -2,4 +2,6 @@
 
 package wsl
 
-func homes() []string { return nil }
+func listDistros() []string { return nil }
+
+func homes([]string) []string { return nil }

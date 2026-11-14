@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -20,6 +21,10 @@ import (
 	"github.com/marioolf/cortex/internal/autostart"
 	"github.com/marioolf/cortex/internal/collector"
 	"github.com/marioolf/cortex/internal/collector/claudecode"
+	"github.com/marioolf/cortex/internal/collector/codex"
+	"github.com/marioolf/cortex/internal/collector/copilot"
+	"github.com/marioolf/cortex/internal/collector/cursor"
+	"github.com/marioolf/cortex/internal/collector/opencode"
 	"github.com/marioolf/cortex/internal/config"
 	"github.com/marioolf/cortex/internal/engine"
 	"github.com/marioolf/cortex/internal/panel"
@@ -65,7 +70,7 @@ func main() {
 }
 
 func collectors() []collector.Collector {
-	return []collector.Collector{claudecode.New()}
+	return []collector.Collector{claudecode.New(), copilot.New(), codex.New(), opencode.New(), cursor.New()}
 }
 
 func newEngine(configPath string) (*engine.Engine, error) {
@@ -108,6 +113,9 @@ func syncOnce(args []string) error {
 		fmt.Printf(", %d failed", st.Failed)
 	}
 	fmt.Println()
+	if st.Failed > 0 {
+		return fmt.Errorf("%d failed", st.Failed) // scripts must be able to tell
+	}
 	return nil
 }
 
@@ -122,18 +130,18 @@ func run(args []string) error {
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
 	url := "http://" + addr + "/"
 
-	// Binding the port is the single-instance lock: whoever holds it is Cortex.
+	// Binding the port is the single-instance lock, but the holder may be some
+	// other program: only a listener that answers like our panel is Cortex.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		if c, derr := net.DialTimeout("tcp", addr, time.Second); derr == nil {
-			c.Close()
+		if panel.Running(url, 2*time.Second) {
 			log.Printf("Cortex is already running at %s", url)
 			if !*noBrowser {
 				panel.Open(url)
 			}
 			return nil
 		}
-		return err
+		return fmt.Errorf("port %d is taken by another program; use -port to pick a different one", *port)
 	}
 	defer ln.Close()
 
@@ -141,6 +149,12 @@ func run(args []string) error {
 		if *configPath, err = config.Path(); err != nil {
 			return err
 		}
+	}
+	// A process with no console (Windows) has no stderr, so keep a log file too.
+	if closeLog, err := logToFile(filepath.Join(filepath.Dir(*configPath), logName)); err != nil {
+		log.Printf("could not open the log file: %v", err)
+	} else {
+		defer closeLog()
 	}
 	if _, err := os.Stat(*configPath); errors.Is(err, os.ErrNotExist) {
 		// First run: write the defaults so the file exists to be edited.
@@ -164,6 +178,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("Cortex %s, vault %s", version, e.Snapshot().Vault)
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return err
@@ -189,7 +204,7 @@ func run(args []string) error {
 	}()
 
 	srv := &http.Server{
-		Handler:           panel.New(e, token, panel.Options{Port: *port}),
+		Handler:           panel.New(e, token, panel.Options{Port: *port, Quit: stop}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

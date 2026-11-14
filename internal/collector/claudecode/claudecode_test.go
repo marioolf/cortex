@@ -108,3 +108,11 @@ func TestCollectSkipsUnchanged(t *testing.T) {
 		t.Errorf("Detect = %v", n)
 	}
 }
+
+func TestToolLineKeepsWholeFirstLine(t *testing.T) {
+	long := strings.Repeat("é", 200)
+	got := toolLine(block{Name: "Bash", Input: map[string]any{"command": long + "\nsecond"}})
+	if want := "> `Bash` " + long; got != want {
+		t.Errorf("toolLine = %q, want the whole first line", got)
+	}
+}

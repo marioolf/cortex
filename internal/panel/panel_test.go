@@ -213,3 +213,83 @@ func TestConfigChanges(t *testing.T) {
 		t.Errorf("open-vault: %d %v", w.Code, en.opened)
 	}
 }
+
+func TestEveryResponseCarriesTheCortexHeader(t *testing.T) {
+	en := setup(t)
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"page":      en.do("GET", "/", good, "", "", ""),
+		"state":     en.do("GET", "/api/state", good, tok, "", ""),
+		"bad host":  en.do("GET", "/", "evil.example", "", "", ""),
+		"bad token": en.do("GET", "/api/state", good, "nope", "", ""),
+	} {
+		if w.Header().Get(Header) != "1" {
+			t.Errorf("%s (status %d): no %s header", name, w.Code, Header)
+		}
+	}
+}
+
+func TestRunning(t *testing.T) {
+	ours := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(Header, "1")
+		http.Error(w, "forbidden", http.StatusForbidden) // the header counts whatever the status
+	}))
+	defer ours.Close()
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	defer other.Close()
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+
+	for name, c := range map[string]struct {
+		url  string
+		want bool
+	}{"cortex": {ours.URL, true}, "another program": {other.URL, false}, "nothing listening": {gone.URL, false}} {
+		if got := Running(c.url, time.Second); got != c.want {
+			t.Errorf("%s: Running = %v, want %v", name, got, c.want)
+		}
+	}
+}
+
+func TestAutostartIsCached(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	(&config.Config{Vault: filepath.Join(dir, "vault")}).Save(cfgPath)
+	e, err := engine.New(cfgPath, []collector.Collector{fakeSource{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, lookups, on := time.Now(), 0, false
+	h := New(e, tok, Options{
+		Port:             47999,
+		Now:              func() time.Time { return now },
+		AutostartEnabled: func() bool { lookups++; return on },
+		SetAutostart:     func(v bool) error { on = v; return nil },
+	})
+	get := func() bool {
+		r := httptest.NewRequest("GET", "/api/state", nil)
+		r.Host = good
+		r.Header.Set("X-Cortex-Token", tok)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		var s engine.State
+		json.NewDecoder(w.Body).Decode(&s)
+		return s.Autostart
+	}
+	for i := 0; i < 7; i++ {
+		get()
+		now = now.Add(5 * time.Second)
+	}
+	if lookups != 2 { // at 0s and at 30s
+		t.Errorf("lookups over 0..30s = %d, want 2", lookups)
+	}
+
+	r := httptest.NewRequest("POST", "/api/config", strings.NewReader(`{"autostart":true}`))
+	r.Host = good
+	r.Header.Set("X-Cortex-Token", tok)
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+	if !get() {
+		t.Error("the value was not refreshed right after SetAutostart")
+	}
+}

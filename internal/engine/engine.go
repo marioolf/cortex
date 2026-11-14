@@ -5,6 +5,7 @@ package engine
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"sync"
@@ -69,12 +70,17 @@ type Engine struct {
 	cfg       *config.Config
 	cols      []collector.Collector
 	red       *redact.Redactor
-	v         *vault.Vault // touched only while holding run
+	v         *vault.Vault // opened on first use; touched only while holding run
 	seen      map[string]seenSession
 	detected  map[string]bool
 	lastSync  time.Time
 	lastStats Stats
 	errs      []string
+
+	// Sessions whose note could not be written, already redacted, retried at
+	// the start of every round. The collectors consider them read, so without
+	// this they would be lost. Touched only while holding run.
+	pending map[string]*session.Session
 }
 
 func New(configPath string, collectors []collector.Collector) (*Engine, error) {
@@ -94,6 +100,7 @@ func New(configPath string, collectors []collector.Collector) (*Engine, error) {
 		cols:     collectors,
 		seen:     map[string]seenSession{},
 		detected: map[string]bool{},
+		pending:  map[string]*session.Session{},
 	}
 	if e.path == "" {
 		if e.path, err = config.Path(); err != nil {
@@ -103,9 +110,8 @@ func New(configPath string, collectors []collector.Collector) (*Engine, error) {
 	if e.red, err = redact.New(cfg.RedactPatterns); err != nil {
 		return nil, err
 	}
-	if e.v, err = vault.Open(cfg.Vault); err != nil {
-		return nil, err
-	}
+	// The vault is not opened here: opening creates the folder, and a caller
+	// that is about to OverrideVault must not leave the default one behind.
 	e.detect()
 	return e, nil
 }
@@ -126,6 +132,19 @@ func (e *Engine) OverrideVault(dir string) error {
 	cfg.Vault = dir
 	e.cfg, e.v = cfg, v
 	return nil
+}
+
+// vault returns the open vault, opening the configured one on first use.
+// Call it only while holding run.
+func (e *Engine) vault(cfg *config.Config) (*vault.Vault, error) {
+	if e.v == nil {
+		v, err := vault.Open(cfg.Vault)
+		if err != nil {
+			return nil, err
+		}
+		e.v = v
+	}
+	return e.v, nil
 }
 
 func (e *Engine) detect() {
@@ -157,10 +176,45 @@ func (e *Engine) Sync() Stats {
 	e.mu.Unlock()
 
 	var st Stats
-	writeFailed := false
+	v, err := e.vault(cfg)
+	if err != nil {
+		st.Failed++
+		e.addError(err.Error())
+		return st
+	}
 	warn := func(err error) {
 		st.Failed++
 		e.addError(err.Error())
+	}
+	// write saves s, or keeps it to retry next round.
+	write := func(s *session.Session) {
+		key := s.Source + "\x00" + s.ID
+		res, err := v.Write(s)
+		if err != nil {
+			e.pending[key] = s
+			warn(fmt.Errorf("%s %s: %w", s.Source, s.ID, err))
+			return
+		}
+		delete(e.pending, key)
+		switch res {
+		case vault.Created:
+			st.Created++
+		case vault.Updated:
+			st.Updated++
+		case vault.Unchanged:
+			st.Unchanged++
+		case vault.Detached:
+			st.Detached++
+		}
+	}
+
+	// Retry first, unless the user has since turned the session off.
+	for key, s := range e.pending {
+		if !cfg.SourceEnabled(s.Source) || cfg.ProjectExcluded(session.Project(s.Cwd)) {
+			delete(e.pending, key)
+			continue
+		}
+		write(s)
 	}
 	for _, c := range e.cols {
 		if !cfg.SourceEnabled(c.ID()) {
@@ -177,33 +231,11 @@ func (e *Engine) Sync() Stats {
 			}
 			s.Title = red.Apply(s.Title)
 			for i := range s.Messages {
-				s.Messages[i].Text = red.Apply(s.Messages[i].Text)
+				// Shorten only after redacting: see session.ShortenToolLines.
+				s.Messages[i].Text = session.ShortenToolLines(red.Apply(s.Messages[i].Text))
 			}
-			res, err := e.v.Write(s)
-			if err != nil {
-				writeFailed = true
-				warn(fmt.Errorf("%s %s: %w", s.Source, s.ID, err))
-				return
-			}
-			switch res {
-			case vault.Created:
-				st.Created++
-			case vault.Updated:
-				st.Updated++
-			case vault.Unchanged:
-				st.Unchanged++
-			case vault.Detached:
-				st.Detached++
-			}
+			write(s)
 		}, warn)
-	}
-
-	// The collectors already consider those sessions read. A note locked by an
-	// editor or a sync tool is usually free again by the next round, so retry.
-	if writeFailed {
-		for _, c := range e.cols {
-			c.Reset()
-		}
 	}
 
 	e.mu.Lock()
@@ -232,7 +264,8 @@ func (e *Engine) Update(f func(*config.Config)) error {
 	e.mu.Lock()
 	old := e.cfg
 	e.mu.Unlock()
-	cfg := clone(old)
+	// Start from the file, so edits made by hand while we run are not lost.
+	cfg := clone(e.diskConfig(old))
 	f(cfg)
 	if cfg.Vault == "" {
 		return fmt.Errorf("vault path is empty")
@@ -253,11 +286,30 @@ func (e *Engine) Update(f func(*config.Config)) error {
 	for _, c := range e.cols {
 		c.Reset()
 	}
+	e.pending = map[string]*session.Session{} // everything is collected again
 	e.v = v
 	e.mu.Lock()
 	e.cfg, e.red = cfg, red
 	e.mu.Unlock()
 	return nil
+}
+
+// diskConfig is the config file as it is now, or fallback when it is missing,
+// does not parse or does not validate (a file that failed here would block
+// every change made in the panel). LoadFile alone would turn a missing file
+// into defaults.
+func (e *Engine) diskConfig(fallback *config.Config) *config.Config {
+	if _, err := os.Stat(e.path); err != nil {
+		return fallback
+	}
+	c, err := config.LoadFile(e.path)
+	if err != nil {
+		return fallback
+	}
+	if _, err := redact.New(c.RedactPatterns); err != nil {
+		return fallback
+	}
+	return c
 }
 
 func clone(c *config.Config) *config.Config {

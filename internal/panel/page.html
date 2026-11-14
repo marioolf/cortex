@@ -105,11 +105,19 @@ details li { padding: 4px 14px; font-size: 0.88rem; overflow-wrap: anywhere; }
   </div>
 
   <p class="muted">Turning something off stops capturing it. Notes already written are never deleted.</p>
+
+  <p><button id="quit" type="button">Quit Cortex</button></p>
 </main>
 <script nonce="{{NONCE}}">
 "use strict";
 const token = document.querySelector('meta[name="cortex-token"]').content;
-const SOURCE_NAMES = { "claude-code": "Claude Code" };
+const SOURCE_NAMES = {
+  "claude-code": "Claude Code",
+  "copilot-vscode": "GitHub Copilot (VS Code)",
+  "codex": "Codex CLI",
+  "opencode": "OpenCode",
+  "cursor": "Cursor",
+};
 const $ = (id) => document.getElementById(id);
 let state = null;
 
@@ -128,7 +136,9 @@ async function call(path, body) {
   return data;
 }
 
+let stopped = false;
 async function load() {
+  if (stopped) return;
   try { render(await call("/api/state")); $("msg").textContent = ""; }
   catch (e) { $("msg").textContent = "Cannot reach Cortex: " + e.message; }
 }
@@ -237,6 +247,14 @@ $("vault-save").addEventListener("click", async () => {
 });
 $("vault-open").addEventListener("click", async () => {
   try { await call("/api/open-vault", {}); } catch (e) { $("msg").textContent = e.message; }
+});
+$("quit").addEventListener("click", async () => {
+  try {
+    await call("/api/quit", {});
+    stopped = true;
+    $("quit").disabled = true;
+    $("msg").textContent = "Cortex has stopped. Start it again to resume capturing.";
+  } catch (e) { $("msg").textContent = e.message; }
 });
 
 load();
