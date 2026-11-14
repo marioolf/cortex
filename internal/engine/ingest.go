@@ -2,11 +2,32 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 
+	"github.com/marioolf/cortex/internal/redact"
 	"github.com/marioolf/cortex/internal/session"
 	"github.com/marioolf/cortex/internal/summarize"
 	"github.com/marioolf/cortex/internal/vault"
 )
+
+// maxTitleChars is the longest title redaction and the vault ever see.
+const maxTitleChars = 500
+
+// maxMessageChars is the per-message cap; tests lower it.
+var maxMessageChars = session.MaxMessageChars
+
+// scrub prepares a session for the vault, in place: it caps the size of the
+// title and of every message first (so redaction has a bounded amount of
+// work), then redacts, then shortens tool lines (after redacting: see
+// session.ShortenToolLines). Every source goes through it: collectors, the
+// extension and import.
+func scrub(s *session.Session, red *redact.Redactor) {
+	s.Title = red.Apply(session.CapText(s.Title, maxTitleChars))
+	for i := range s.Messages {
+		m := &s.Messages[i]
+		m.Text = session.ShortenToolLines(red.Apply(session.CapText(m.Text, maxMessageChars)))
+	}
+}
 
 // Results of Ingest.
 const (
@@ -45,12 +66,8 @@ func (e *Engine) Ingest(s *session.Session, explicit bool) (string, error) {
 
 	// Work on a copy: the caller keeps its own, unredacted, session.
 	c := *s
-	c.Title = red.Apply(s.Title)
-	c.Messages = make([]session.Message, len(s.Messages))
-	for i, m := range s.Messages {
-		m.Text = session.ShortenToolLines(red.Apply(m.Text)) // after redacting: see ShortenToolLines
-		c.Messages[i] = m
-	}
+	c.Messages = slices.Clone(s.Messages)
+	scrub(&c, red)
 	res, err := v.Write(&c)
 	if err != nil {
 		return "", fmt.Errorf("%s %s: %w", s.Source, s.ID, err)

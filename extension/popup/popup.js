@@ -1,11 +1,12 @@
 'use strict';
 const { ext, load } = CortexSettings;
+const { MESSAGES } = CortexUtil;
 const $ = (id) => document.getElementById(id);
 
 const CONN = {
   down: ['err', 'Cortex is not running.'],
   'bad-code': ['err', 'Wrong pairing code.'],
-  'no-code': ['err', 'Not paired yet. Open Options.'],
+  'no-code': ['err', MESSAGES.notPaired + '.'],
   'bad-port': ['err', 'Invalid port. Open Options.'],
 };
 
@@ -22,6 +23,8 @@ function pageText(r) {
     case 'saved': return 'This page: saved ' + (r.lastSentAt ? ago(r.lastSentAt) : 'just now') + '.';
     case 'off': return 'This page: site turned off.';
     case 'paused': return 'Saving is paused.';
+    case 'skipped': return 'This page: ' + MESSAGES.skipped + '.';
+    case 'no-code': return 'This page: ' + MESSAGES.notPaired + '.';
     case 'down': return 'This page: Cortex not running.';
     case 'bad-code': return 'This page: wrong pairing code.';
     case 'rejected': return 'This page: Cortex refused it (too large or invalid).';
@@ -50,7 +53,7 @@ async function pageState(type) {
 
   const r = await pageState('getPageState');
   $('page').textContent = pageText(r);
-  const canSave = r && r.state !== 'not-conversation' && r.state !== 'off' && r.state !== 'paused' && res && res.ok;
+  const canSave = r && r.state !== 'not-conversation' && r.state !== 'off' && r.state !== 'paused' && r.state !== 'no-code' && res && res.ok;
   $('save').disabled = !canSave;
   $('save').addEventListener('click', async () => {
     $('save').disabled = true;

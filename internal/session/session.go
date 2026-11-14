@@ -2,6 +2,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/marioolf/cortex/internal/wsl"
 )
@@ -117,4 +119,29 @@ func ShortenToolLines(text string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// MaxMessageChars is the most characters of one message (or title) Cortex
+// saves. One conversation can hold a single message of hundreds of MB; saving
+// it whole would make a note nobody can open and keep redaction busy for
+// minutes.
+const MaxMessageChars = 1_000_000
+
+// CapText cuts text to max characters, on a character boundary, and ends it
+// with a line saying how many were left out. Text that fits is returned as is.
+// Run it before redaction so that redaction has a bounded amount of work; the
+// cut can leave the first few characters of a secret at the very end, which no
+// redaction rule will recognise, the same trade-off as ShortenToolLines.
+func CapText(text string, max int) string {
+	if len(text) <= max { // bytes >= characters: it surely fits
+		return text
+	}
+	n := 0
+	for i := range text {
+		if n == max {
+			return fmt.Sprintf("%s\n\n[… %d more characters not saved by Cortex]", text[:i], utf8.RuneCountInString(text[i:]))
+		}
+		n++
+	}
+	return text
 }

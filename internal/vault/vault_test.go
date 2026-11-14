@@ -284,3 +284,47 @@ func TestSourceCountsComeFromTheNotes(t *testing.T) {
 		t.Errorf("counts = %v", got)
 	}
 }
+
+// The same id under two sources is two sessions: a push for "chatgpt" must not
+// land in the note of a "claude-ai" conversation that happens to share it.
+func TestSameIDUnderTwoSourcesMakesTwoNotes(t *testing.T) {
+	root := t.TempDir()
+	v := open(t, root)
+	mk := func(source, text string) *session.Session {
+		return &session.Session{Source: source, ID: "shared-id-1", Title: "T",
+			Messages: []session.Message{{Role: "user", Text: text}}}
+	}
+	write(t, v, mk("claude-ai", "from claude"), Created)
+	write(t, v, mk("chatgpt", "from chatgpt"), Created)
+	pa, pb := v.NotePath(Key{"claude-ai", "shared-id-1"}), v.NotePath(Key{"chatgpt", "shared-id-1"})
+	if pa == "" || pb == "" || pa == pb {
+		t.Fatalf("paths %q %q", pa, pb)
+	}
+	a, _ := os.ReadFile(pa)
+	b, _ := os.ReadFile(pb)
+	if !strings.Contains(string(a), "from claude") || strings.Contains(string(a), "from chatgpt") ||
+		!strings.Contains(string(b), "from chatgpt") || strings.Contains(string(b), "from claude") {
+		t.Fatalf("notes mixed:\n%s\n%s", a, b)
+	}
+	// The same source and id still merge into one note, also after a restart.
+	write(t, v, mk("chatgpt", "from chatgpt, edited"), Updated)
+	v2 := open(t, root)
+	write(t, v2, mk("claude-ai", "from claude, edited"), Updated)
+	if v2.NotePath(Key{"chatgpt", "shared-id-1"}) != pb || v2.NotePath(Key{"claude-ai", "shared-id-1"}) != pa {
+		t.Fatal("index differs after reopening")
+	}
+	if got := v2.SourceCounts(); got["chatgpt"] != 1 || got["claude-ai"] != 1 {
+		t.Fatalf("counts %v", got)
+	}
+	if k, err := v2.SessionOf(pb); err != nil || k != (Key{"chatgpt", "shared-id-1"}) {
+		t.Fatalf("SessionOf = %v %v", k, err)
+	}
+	// Summaries are per note as well.
+	_, h, _ := v2.ConversationText(Key{"chatgpt", "shared-id-1"})
+	if err := v2.WriteSummary(Key{"chatgpt", "shared-id-1"}, h, "T", "only for chatgpt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := v2.Summary(Key{"claude-ai", "shared-id-1"}); ok {
+		t.Fatal("summary leaked to the other source")
+	}
+}

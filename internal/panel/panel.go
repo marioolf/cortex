@@ -236,7 +236,8 @@ type mcpState struct {
 	Command       string        `json:"command"` // empty when our own path is unknown
 	Args          []string      `json:"args"`
 	ClaudeCode    string        `json:"claude_code"`               // command line for Claude Code
-	ClaudeCodeWSL string        `json:"claude_code_wsl,omitempty"` // the same, to run inside WSL
+	ClaudeShell   string        `json:"claude_code_shell"`         // the shell that line is quoted for
+	ClaudeCodeWSL string        `json:"claude_code_wsl,omitempty"` // the same, to run inside WSL (bash)
 	Clients       []clientState `json:"clients"`
 }
 
@@ -267,6 +268,10 @@ func (p *panel) mcpState() mcpState {
 	}
 	m.Command = exe
 	m.ClaudeCode = connect.ClaudeCodeCommand(exe, p.opt.GOOS)
+	m.ClaudeShell = "a terminal (bash or zsh)"
+	if p.opt.GOOS == "windows" {
+		m.ClaudeShell = "PowerShell"
+	}
 	if p.opt.GOOS == "windows" {
 		// The Windows program started from WSL finds its own config through
 		// interop, so no -vault is needed.

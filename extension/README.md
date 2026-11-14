@@ -23,6 +23,9 @@ is **not in any browser store yet**: you load it unpacked, as below.
 3. Open the extension's **Options**, paste the code, leave the port at `47821`
    unless you started Cortex with `-port`, and press **Test connection**. It says
    "Connected (Cortex x.y)", "Wrong pairing code" or "Cortex is not running".
+   With no code entered the popup and the icon say "Not paired yet: paste the code
+   from the Cortex panel in the extension's options", and the extension does not
+   try to reach Cortex until a code is saved.
 The port is shown in the same panel section.
 
 Settings (code, port, per-site switches, global pause) are kept in
@@ -71,15 +74,20 @@ pairing code alone (header `X-Cortex-Extension`); the panel's own token is not i
   and answers `{"result":"created"|"updated"|"unchanged"|"skipped"}`. 400 means invalid
   (unknown source, bad id, no messages, a `url` that is not an https address of that
   site, unknown fields), 403 a wrong code, 413 a body over 5 MB. `skipped` means Cortex is
-  paused or that site is switched off in the panel; nothing was written.
+  paused or that site is switched off in the panel; nothing was written. The extension does not treat
+  `skipped` as saved: the popup says "Cortex is paused or this site is turned off in
+  Cortex" and the push is retried every 60 seconds while the tab is visible.
 - A request whose `Origin` is not `chrome-extension://` or `moz-extension://` is refused,
   and Cortex sends no CORS headers, so a web page cannot use these routes.
 - Each push replaces the whole note body of that conversation (it is not appended to),
   so the note always matches what the page showed. Secrets are redacted like everywhere
   else. The extension cannot see message times, so a new note is dated when Cortex first
   received it.
-- A conversation imported from an export and later pushed with the same id is the same
-  note.
+- A conversation imported from an export and later pushed with the same source and id is
+  the same note. The `url:` line of a note is written only when the extension creates it:
+  a note that already existed (an imported one) does not get it later.
+- A message of more than 1,000,000 characters is cut there and ends with a line
+  `[… N more characters not saved by Cortex]`.
 
 If a site stops working, check what a message looks like in the browser's
 developer tools and fix only that site's file under `content/sites/`.

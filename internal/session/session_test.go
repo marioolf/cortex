@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/marioolf/cortex/internal/wsl"
 )
@@ -90,5 +91,28 @@ func TestShortenToolLines(t *testing.T) {
 		if got := ShortenToolLines(c.in); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestCapText(t *testing.T) {
+	if got := CapText("short", 10); got != "short" {
+		t.Fatal(got)
+	}
+	if got := CapText("12345", 5); got != "12345" {
+		t.Fatal(got)
+	}
+	got := CapText("héllo wörld", 4)
+	if got != "héll\n\n[… 7 more characters not saved by Cortex]" {
+		t.Fatalf("%q", got)
+	}
+	// Multi-byte characters are never split, and the count is in characters.
+	got = CapText(strings.Repeat("日本", 10), 3)
+	if !strings.HasPrefix(got, "日本日\n\n[… 17 more") || !utf8.ValidString(got) {
+		t.Fatalf("%q", got)
+	}
+	// A huge text yields a small one.
+	big := strings.Repeat("a", 50<<20)
+	if out := CapText(big, 1000); len(out) > 1100 || !strings.HasSuffix(out, "[… 52427800 more characters not saved by Cortex]") {
+		t.Fatalf("%d bytes, %q", len(out), out[len(out)-60:])
 	}
 }

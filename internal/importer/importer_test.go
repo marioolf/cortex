@@ -9,7 +9,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marioolf/cortex/internal/session"
 )
+
+// SkippedError and Parse collect everything Each delivers; only tests may do
+// that, the product never holds all sessions.
+type SkippedError struct{ Skipped int }
+
+func (e *SkippedError) Error() string { return "skipped" }
+
+func Parse(path string) ([]*session.Session, error) {
+	var out []*session.Session
+	n, err := Each(path, func(s *session.Session) error { out = append(out, s); return nil })
+	if err == nil && n > 0 {
+		err = &SkippedError{n}
+	}
+	return out, err
+}
 
 // --- invented fixtures ---
 

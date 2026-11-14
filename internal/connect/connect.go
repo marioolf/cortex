@@ -85,8 +85,8 @@ func parseObject(data []byte) ([]member, error) {
 	if t, err := dec.Token(); err != nil || t != json.Delim('}') {
 		return nil, ErrNotObject
 	}
-	if _, err := dec.Token(); err == nil {
-		return nil, ErrNotObject // trailing data
+	if len(bytes.TrimSpace(data[dec.InputOffset():])) != 0 {
+		return nil, ErrNotObject // trailing data, valid JSON or not: it would be lost
 	}
 	return ms, nil
 }
@@ -153,9 +153,18 @@ func Status(path string, want Entry) (string, error) {
 	return "outdated", nil
 }
 
+// ErrReadOnly means the user made the file read-only, which is a statement
+// that it must not change.
+var ErrReadOnly = errors.New("the file is read-only; paste the snippet by hand instead")
+
+var bom = []byte("\xef\xbb\xbf")
+
 // Add sets mcpServers.cortex in the config file at path and keeps everything
-// else as it was. The original is saved next to it as path+".bak" first, and
-// the new content replaces it atomically.
+// else as it was: member order, formatting of the rest, a UTF-8 BOM and the
+// permission bits. When Cortex is added for the first time, the original is
+// saved next to it as path+".bak"; replacing an existing cortex entry leaves
+// the .bak alone, so it stays the file as the user had it. The new content
+// replaces the file atomically. A read-only file is refused.
 func Add(path string, e Entry) error {
 	if target, err := filepath.EvalSymlinks(path); err == nil {
 		path = target // a dotfile manager's symlink must stay a symlink
@@ -165,6 +174,10 @@ func Add(path string, e Entry) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if st, err := os.Stat(path); err == nil && st.Mode().Perm()&0o200 == 0 {
+		return ErrReadOnly
+	}
+	hadBOM := bytes.HasPrefix(data, bom)
 	ms, err := parseObject(data)
 	if err != nil {
 		return err
@@ -176,7 +189,9 @@ func Add(path string, e Entry) error {
 		}
 	}
 	entry, _ := json.MarshalIndent(e, "    ", "  ")
+	replacing := false
 	if j := find(servers, "cortex"); j >= 0 {
+		replacing = true
 		servers[j].raw = entry
 	} else {
 		servers = append(servers, member{"cortex", entry})
@@ -188,8 +203,11 @@ func Add(path string, e Entry) error {
 		ms = append(ms, member{"mcpServers", block})
 	}
 	out := append(write(ms, ""), '\n')
+	if hadBOM {
+		out = append(bom[:len(bom):len(bom)], out...)
+	}
 
-	if existed {
+	if existed && !replacing {
 		if err := os.WriteFile(path+".bak", data, 0o600); err != nil {
 			return fmt.Errorf("could not save a backup: %w", err)
 		}
@@ -216,18 +234,39 @@ func Add(path string, e Entry) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// ClaudeCodeCommand is the line that registers Cortex with Claude Code. goos
-// picks the quoting: double quotes are right for cmd and PowerShell, and
-// POSIX shells need the characters they treat specially escaped.
+// ClaudeCodeCommand is the line that registers Cortex with Claude Code, for
+// the shell people use on goos: PowerShell on Windows, where double quotes
+// would still expand $ and backticks, so the path goes in single quotes; a
+// POSIX shell (bash, zsh) elsewhere, with single quotes too, which make every
+// character inert, ! and $ included.
 func ClaudeCodeCommand(exe, goos string) string {
-	return "claude mcp add --scope user cortex -- " + shellQuote(exe, goos) + " mcp"
+	if goos == "windows" {
+		return "claude mcp add --scope user cortex -- " + PowerShellQuote(exe) + " mcp"
+	}
+	return "claude mcp add --scope user cortex -- " + BashQuote(exe) + " mcp"
 }
 
-func shellQuote(s, goos string) string {
-	if goos != "windows" {
-		s = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(s)
+// PowerShellQuote puts s in a PowerShell single-quoted string, where nothing is
+// expanded and only the quote itself needs doubling. PowerShell also reads the
+// typographic single quotes as quotes, so they are doubled too.
+func PowerShellQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('\'')
+	for _, r := range s {
+		b.WriteRune(r)
+		switch r {
+		case '\'', '\u2018', '\u2019', '\u201A', '\u201B':
+			b.WriteRune(r)
+		}
 	}
-	return `"` + s + `"`
+	b.WriteByte('\'')
+	return b.String()
+}
+
+// BashQuote puts s in single quotes, ending the quote around each single
+// quote of s (the standard quote, backslash, quote, quote sequence).
+func BashQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // WSLPath turns a Windows drive path into the path WSL sees it under

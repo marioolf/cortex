@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func notePath(t *testing.T, v *Vault, s string) string {
+func notePath(t *testing.T, v *Vault, s Key) string {
 	t.Helper()
 	p := v.NotePath(s)
 	if p == "" {
@@ -32,12 +32,12 @@ func TestSummaryPlacementAndReplacement(t *testing.T) {
 	v.Now = func() time.Time { return time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC) }
 	s := sample()
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
+	p := notePath(t, v, KeyOf(s))
 
-	if _, ok := v.Summary(s.ID); ok {
+	if _, ok := v.Summary(KeyOf(s)); ok {
 		t.Fatal("summary before any was written")
 	}
-	text, hash, err := v.ConversationText(s.ID)
+	text, hash, err := v.ConversationText(KeyOf(s))
 	if err != nil || len(hash) != 12 || !strings.Contains(text, "## User") || strings.Contains(text, "cortex:start") {
 		t.Fatalf("text=%q hash=%q err=%v", text, hash, err)
 	}
@@ -45,7 +45,7 @@ func TestSummaryPlacementAndReplacement(t *testing.T) {
 		t.Errorf("messages = %d", n)
 	}
 
-	if err := v.WriteSummary(s.ID, hash, "Claude Code", "- asked X\n- did Y"); err != nil {
+	if err := v.WriteSummary(KeyOf(s), hash, "Claude Code", "- asked X\n- did Y"); err != nil {
 		t.Fatal(err)
 	}
 	note := read(t, p)
@@ -53,12 +53,12 @@ func TestSummaryPlacementAndReplacement(t *testing.T) {
 	if !strings.Contains(note, want) {
 		t.Fatalf("note =\n%s", note)
 	}
-	if h, ok := v.Summary(s.ID); !ok || h != hash {
+	if h, ok := v.Summary(KeyOf(s)); !ok || h != hash {
 		t.Errorf("Summary = %q %v", h, ok)
 	}
 
 	// Replacing leaves exactly one block.
-	if err := v.WriteSummary(s.ID, hash, "Codex CLI", "second"); err != nil {
+	if err := v.WriteSummary(KeyOf(s), hash, "Codex CLI", "second"); err != nil {
 		t.Fatal(err)
 	}
 	note = read(t, p)
@@ -71,9 +71,9 @@ func TestConversationUpdatesKeepTheSummaryAndTheUsersText(t *testing.T) {
 	v := open(t, t.TempDir())
 	s := sample()
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
-	_, hash, _ := v.ConversationText(s.ID)
-	if err := v.WriteSummary(s.ID, hash, "T", "keep me"); err != nil {
+	p := notePath(t, v, KeyOf(s))
+	_, hash, _ := v.ConversationText(KeyOf(s))
+	if err := v.WriteSummary(KeyOf(s), hash, "T", "keep me"); err != nil {
 		t.Fatal(err)
 	}
 	// The user writes above the summary, between the blocks and below.
@@ -96,17 +96,17 @@ func TestConversationUpdatesKeepTheSummaryAndTheUsersText(t *testing.T) {
 		t.Errorf("blocks duplicated:\n%s", after)
 	}
 	// The summary now refers to older content.
-	if h, _ := v.Summary(s.ID); h != hash {
+	if h, _ := v.Summary(KeyOf(s)); h != hash {
 		t.Error("the stored hash changed by itself")
 	}
-	if _, h2, _ := v.ConversationText(s.ID); h2 == hash {
+	if _, h2, _ := v.ConversationText(KeyOf(s)); h2 == hash {
 		t.Error("the conversation hash did not change")
 	}
 	write(t, v, s, Unchanged)
 
 	// Replacing the summary keeps the user's text around both blocks too.
-	_, h2, _ := v.ConversationText(s.ID)
-	if err := v.WriteSummary(s.ID, h2, "T", "new"); err != nil {
+	_, h2, _ := v.ConversationText(KeyOf(s))
+	if err := v.WriteSummary(KeyOf(s), h2, "T", "new"); err != nil {
 		t.Fatal(err)
 	}
 	after = read(t, p)
@@ -121,11 +121,11 @@ func TestMarkerLikeTextCannotConfuseEitherBlock(t *testing.T) {
 	// A conversation that talks about our markers, summary ones included.
 	s.Messages[0].Text = "see <!-- cortex:summary:start hash=000000000000 --> and <!-- cortex:summary:end --> and <!-- cortex:start -->"
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
-	_, hash, _ := v.ConversationText(s.ID)
+	p := notePath(t, v, KeyOf(s))
+	_, hash, _ := v.ConversationText(KeyOf(s))
 
 	evil := "x <!-- cortex:end --> y <!-- cortex:summary:end --> z <!-- cortex:start --> <!-- cortex:summary:start hash=aaaaaaaaaaaa -->"
-	if err := v.WriteSummary(s.ID, hash, "T <!-- cortex:end -->", evil); err != nil {
+	if err := v.WriteSummary(KeyOf(s), hash, "T <!-- cortex:end -->", evil); err != nil {
 		t.Fatal(err)
 	}
 	note := read(t, p)
@@ -133,21 +133,21 @@ func TestMarkerLikeTextCannotConfuseEitherBlock(t *testing.T) {
 		strings.Count(note, "<!-- cortex:start -->") != 1 || strings.Count(note, "<!-- cortex:end -->") != 1 {
 		t.Fatalf("markers multiplied:\n%s", note)
 	}
-	if h, ok := v.Summary(s.ID); !ok || h != hash {
+	if h, ok := v.Summary(KeyOf(s)); !ok || h != hash {
 		t.Errorf("Summary = %q %v", h, ok)
 	}
 	// Updating and re-summarising still works and keeps single blocks.
 	s.Messages = append(s.Messages, s.Messages[1])
 	write(t, v, s, Updated)
-	_, h2, _ := v.ConversationText(s.ID)
-	if err := v.WriteSummary(s.ID, h2, "T", evil); err != nil {
+	_, h2, _ := v.ConversationText(KeyOf(s))
+	if err := v.WriteSummary(KeyOf(s), h2, "T", evil); err != nil {
 		t.Fatal(err)
 	}
 	note = read(t, p)
 	if strings.Count(note, "<!-- cortex:summary:start") != 1 || strings.Count(note, "<!-- cortex:start -->") != 1 {
 		t.Errorf("after update:\n%s", note)
 	}
-	if text, _, err := v.ConversationText(s.ID); err != nil || !strings.Contains(text, "## Assistant") {
+	if text, _, err := v.ConversationText(KeyOf(s)); err != nil || !strings.Contains(text, "## Assistant") {
 		t.Errorf("conversation text = %q %v", text, err)
 	}
 }
@@ -156,13 +156,13 @@ func TestStaleAndDetachedAndMissing(t *testing.T) {
 	v := open(t, t.TempDir())
 	s := sample()
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
-	_, hash, _ := v.ConversationText(s.ID)
+	p := notePath(t, v, KeyOf(s))
+	_, hash, _ := v.ConversationText(KeyOf(s))
 
-	if err := v.WriteSummary(s.ID, "000000000000", "T", "x"); !errors.Is(err, ErrStale) {
+	if err := v.WriteSummary(KeyOf(s), "000000000000", "T", "x"); !errors.Is(err, ErrStale) {
 		t.Errorf("stale hash: %v", err)
 	}
-	if err := v.WriteSummary("nope", hash, "T", "x"); !errors.Is(err, ErrNoNote) {
+	if err := v.WriteSummary(Key{"claude-code", "nope"}, hash, "T", "x"); !errors.Is(err, ErrNoNote) {
 		t.Errorf("missing note: %v", err)
 	}
 
@@ -171,10 +171,10 @@ func TestStaleAndDetachedAndMissing(t *testing.T) {
 	note = strings.NewReplacer("<!-- cortex:start -->", "", "<!-- cortex:end -->", "").Replace(note)
 	os.WriteFile(p, []byte(note), 0o644)
 	before := read(t, p)
-	if err := v.WriteSummary(s.ID, hash, "T", "x"); !errors.Is(err, ErrDetached) {
+	if err := v.WriteSummary(KeyOf(s), hash, "T", "x"); !errors.Is(err, ErrDetached) {
 		t.Errorf("detached: %v", err)
 	}
-	if _, _, err := v.ConversationText(s.ID); !errors.Is(err, ErrDetached) {
+	if _, _, err := v.ConversationText(KeyOf(s)); !errors.Is(err, ErrDetached) {
 		t.Errorf("detached text: %v", err)
 	}
 	if read(t, p) != before {
@@ -186,14 +186,14 @@ func TestWriteSummaryKeepsTheModTime(t *testing.T) {
 	v := open(t, t.TempDir())
 	s := sample()
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
+	p := notePath(t, v, KeyOf(s))
 	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
 	os.Chtimes(p, old, old)
-	_, hash, _ := v.ConversationText(s.ID)
-	if err := v.WriteSummary(s.ID, hash, "T", "x"); err != nil {
+	_, hash, _ := v.ConversationText(KeyOf(s))
+	if err := v.WriteSummary(KeyOf(s), hash, "T", "x"); err != nil {
 		t.Fatal(err)
 	}
-	if m, ok := v.ModTime(s.ID); !ok || !m.Equal(old) {
+	if m, ok := v.ModTime(KeyOf(s)); !ok || !m.Equal(old) {
 		t.Errorf("mtime = %v, want %v", m, old)
 	}
 }
@@ -203,10 +203,10 @@ func TestSessionOf(t *testing.T) {
 	v := open(t, root)
 	s := sample()
 	write(t, v, s, Created)
-	p := notePath(t, v, s.ID)
+	p := notePath(t, v, KeyOf(s))
 	rel, _ := filepath.Rel(root, p)
 	for _, in := range []string{rel, p} {
-		if id, err := v.SessionOf(in); err != nil || id != s.ID {
+		if id, err := v.SessionOf(in); err != nil || id != KeyOf(s) {
 			t.Errorf("SessionOf(%q) = %q %v", in, id, err)
 		}
 	}

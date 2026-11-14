@@ -352,11 +352,14 @@ func TestStateReportsMCPCommand(t *testing.T) {
 	if m.Command != `C:\Apps\Cortex\cortex.exe` || len(m.Args) != 1 || m.Args[0] != "mcp" {
 		t.Errorf("mcp = %+v", m)
 	}
-	if want := `claude mcp add --scope user cortex -- "C:\Apps\Cortex\cortex.exe" mcp`; m.ClaudeCode != want {
+	if want := `claude mcp add --scope user cortex -- 'C:\Apps\Cortex\cortex.exe' mcp`; m.ClaudeCode != want {
 		t.Errorf("claude_code = %s", m.ClaudeCode)
 	}
-	if want := `claude mcp add --scope user cortex -- "/mnt/c/Apps/Cortex/cortex.exe" mcp`; m.ClaudeCodeWSL != want {
+	if want := `claude mcp add --scope user cortex -- '/mnt/c/Apps/Cortex/cortex.exe' mcp`; m.ClaudeCodeWSL != want {
 		t.Errorf("claude_code_wsl = %s", m.ClaudeCodeWSL)
+	}
+	if m.ClaudeShell != "PowerShell" {
+		t.Errorf("shell = %q", m.ClaudeShell)
 	}
 	if strings.Contains(m.ClaudeCodeWSL, "-vault") {
 		t.Error("the WSL variant must not need -vault")
@@ -481,6 +484,18 @@ func TestPageHasTheWebChatsSection(t *testing.T) {
 	for _, want := range []string{"Web chats", "Import an export", "Browser extension", "ChatGPT (web)", "Claude (web)", "Gemini (web)",
 		"Data controls", "Settings, Privacy", "chrome://extensions", `id="ext-code"`, "readonly", "needs the browser extension or an import"} {
 		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// The page names the shell of every command and shows both OpenCode shapes.
+func TestPageNamesShellsAndOpenCodeShapes(t *testing.T) {
+	en := setup(t)
+	page := en.do("GET", "/", good, "", "", "").Body.String()
+	for _, want := range []string{`m.claude_code_shell`, `inside WSL (bash)`, `mounted under /mnt`,
+		`{ mcp: { servers: { cortex: ocServer } } }`, `{ mcp: { cortex: Object.assign({ enabled: true }, ocServer) } }`} {
+		if !strings.Contains(page, want) {
 			t.Errorf("page lacks %q", want)
 		}
 	}

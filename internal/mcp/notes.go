@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // note is the frontmatter of one Cortex note, without its body.
@@ -86,6 +87,14 @@ func (x *index) walk() ([]fileInfo, error) {
 		}
 		rel, err := filepath.Rel(x.root, p)
 		if err != nil {
+			return nil
+		}
+		// Results print the path and `read` takes it back, so what is printed
+		// must be exactly the path. A name with a line break or another control
+		// character cannot be printed on one line without changing it, and Cortex
+		// never writes such names: it is left out of search and recent, rather
+		// than listed under a path that read would not find.
+		if strings.IndexFunc(rel, unsafeRune) >= 0 {
 			return nil
 		}
 		files = append(files, fileInfo{p, filepath.ToSlash(rel), info.ModTime(), info.Size()})
@@ -202,10 +211,24 @@ func unquote(v string) string {
 	return v
 }
 
-// oneLine collapses whitespace and cuts s to at most max characters.
+// unsafeRune reports a character that must not reach a result line or a note
+// path: C0 and C1 controls (line breaks, escape sequences, ...) and the Unicode
+// line and paragraph separators.
+func unsafeRune(r rune) bool { return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' }
+
+// oneLine turns s into one line of plain text: unsafe characters and any run of
+// whitespace become one space. It cuts the result to at most max characters; 0
+// means no cut. Everything the vault supplies goes through it before it is
+// printed.
 func oneLine(s string, max int) string {
+	s = strings.Map(func(r rune) rune {
+		if unsafeRune(r) {
+			return ' '
+		}
+		return r
+	}, s)
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > max {
+	if r := []rune(s); max > 0 && len(r) > max {
 		return string(r[:max]) + "…"
 	}
 	return s

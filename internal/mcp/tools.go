@@ -61,7 +61,7 @@ func toolDefs() []obj {
 			"inputSchema": schema([]string{"query"}, obj{
 				"query":   prop("string", "Words to look for; all must appear."),
 				"project": prop("string", "Only notes of this project (case-insensitive)."),
-				"source":  prop("string", "Only notes from this tool, e.g. claude-code, codex, cursor, opencode, copilot-vscode (case-insensitive)."),
+				"source":  prop("string", "Only notes from this tool, e.g. claude-code, codex, cursor, opencode, copilot-vscode, or the web chats chatgpt, claude-ai, gemini (case-insensitive)."),
 				"since":   prop("string", "Only conversations started on or after this date (YYYY-MM-DD)."),
 				"limit":   obj{"type": "integer", "description": "Maximum notes to return (default 10, max 50).", "minimum": 1, "maximum": maxLimit},
 			}),
@@ -83,7 +83,7 @@ func toolDefs() []obj {
 			"description": "List the most recently changed notes, newest first, to see what the user has been working on.",
 			"inputSchema": schema(nil, obj{
 				"project": prop("string", "Only notes of this project (case-insensitive)."),
-				"source":  prop("string", "Only notes from this tool (case-insensitive)."),
+				"source":  prop("string", "Only notes from this tool, e.g. claude-code, codex, cursor, opencode, copilot-vscode, chatgpt, claude-ai, gemini (case-insensitive)."),
 				"limit":   obj{"type": "integer", "description": "Maximum notes to return (default 10, max 50).", "minimum": 1, "maximum": maxLimit},
 			}),
 			"annotations": annotations("Recent conversations"),
@@ -216,10 +216,10 @@ func (s *Server) search(raw []byte) (string, error) {
 	}
 	b.WriteString(":\n")
 	for i, h := range shown {
-		fmt.Fprintf(&b, "\n%d. %s\n", i+1, h.n.Path)
+		fmt.Fprintf(&b, "\n%d. %s\n", i+1, h.n.Path) // Path is safe to print as it is: see index.walk
 		writeMeta(&b, h.n)
 		for _, sn := range h.snippets {
-			b.WriteString("   > " + sn + "\n")
+			b.WriteString("   > " + oneLine(sn, 0) + "\n")
 		}
 	}
 	return b.String(), nil
@@ -227,7 +227,7 @@ func (s *Server) search(raw []byte) (string, error) {
 
 func writeMeta(b *strings.Builder, n note) {
 	fmt.Fprintf(b, "   title: %s\n   project: %s | source: %s | started: %s\n",
-		oneLine(n.Title, 200), dash(oneLine(n.Project, 100)), dash(oneLine(n.Source, 50)), dash(n.Started))
+		oneLine(n.Title, 200), dash(oneLine(n.Project, 100)), dash(oneLine(n.Source, 50)), dash(oneLine(n.Started, 40)))
 }
 
 func dash(s string) string {
@@ -358,10 +358,12 @@ func (s *Server) recent(raw []byte) (string, error) {
 			notes = append(notes, n)
 		}
 	}
-	if len(notes) == 0 {
-		return "No notes found.\n", nil
-	}
 	var b strings.Builder
+	b.WriteString(dataNotice + "\n\n")
+	if len(notes) == 0 {
+		b.WriteString("No notes found.\n")
+		return b.String(), nil
+	}
 	fmt.Fprintf(&b, "%d most recently changed notes, newest first:\n", len(notes))
 	for i, n := range notes {
 		fmt.Fprintf(&b, "\n%d. %s\n", i+1, n.Path)
@@ -470,8 +472,8 @@ func resolveNote(root, rel string) (string, error) {
 	switch {
 	case rel == "":
 		return "", errors.New("note is required: use a path returned by search or recent")
-	case strings.ContainsRune(rel, 0):
-		return "", errors.New("invalid note path")
+	case strings.IndexFunc(rel, unsafeRune) >= 0:
+		return "", errors.New("invalid note path") // search and recent never list such a note: see index.walk
 	case strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, `\`) || driveLetter.MatchString(rel) || filepath.IsAbs(rel):
 		return "", errors.New("note must be a path relative to the vault, as returned by search")
 	}

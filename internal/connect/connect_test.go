@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -140,11 +141,18 @@ func TestAvailable(t *testing.T) {
 }
 
 func TestClaudeCodeCommandAndWSLPath(t *testing.T) {
-	if got, want := ClaudeCodeCommand(`C:\Users\me\My Apps\cortex.exe`, "windows"), `claude mcp add --scope user cortex -- "C:\Users\me\My Apps\cortex.exe" mcp`; got != want {
-		t.Errorf("windows: %s", got)
-	}
-	if got, want := ClaudeCodeCommand(`/opt/my "apps"/$x/cortex`, "linux"), `claude mcp add --scope user cortex -- "/opt/my \"apps\"/\$x/cortex" mcp`; got != want {
-		t.Errorf("linux: %s", got)
+	const pre = `claude mcp add --scope user cortex -- `
+	for _, c := range []struct{ exe, goos, want string }{
+		{`C:\Users\me\My Apps\cortex.exe`, "windows", pre + `'C:\Users\me\My Apps\cortex.exe' mcp`},
+		// PowerShell expands $ and backticks in double quotes; in single quotes only ' needs doubling.
+		{"C:\\Users\\o'brien\\$x`y\\\"z\\cortex.exe", "windows", pre + "'C:\\Users\\o''brien\\$x`y\\\"z\\cortex.exe' mcp"},
+		{"C:\\a\u2019b\\c.exe", "windows", pre + "'C:\\a\u2019\u2019b\\c.exe' mcp"},
+		{`/opt/my "apps"/$x/cortex`, "linux", pre + `'/opt/my "apps"/$x/cortex' mcp`},
+		{"/opt/it's!/`id`/cortex", "darwin", pre + `'/opt/it'\''s!/` + "`id`" + `/cortex' mcp`},
+	} {
+		if got := ClaudeCodeCommand(c.exe, c.goos); got != c.want {
+			t.Errorf("%s %q:\n got %s\nwant %s", c.goos, c.exe, got, c.want)
+		}
 	}
 	for in, want := range map[string]string{
 		`C:\Users\me\cortex.exe`: "/mnt/c/Users/me/cortex.exe",
@@ -158,5 +166,89 @@ func TestClaudeCodeCommandAndWSLPath(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("WSLPath(%q) = %q, %v", in, got, ok)
 		}
+	}
+}
+
+func TestTrailingGarbageIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{"word": `{"a":1} oops`, "brace": `{"a":1}}`, "comment": "{\"a\":1}\n// note"} {
+		path := filepath.Join(dir, name+".json")
+		os.WriteFile(path, []byte(content), 0o600)
+		if err := Add(path, entry); err == nil || !strings.Contains(err.Error(), "by hand") {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if got, _ := os.ReadFile(path); string(got) != content {
+			t.Errorf("%s: changed to %q", name, got)
+		}
+	}
+	ok := filepath.Join(dir, "ok.json")
+	os.WriteFile(ok, []byte("{\"a\":1} \r\n\t\n"), 0o600)
+	if err := Add(ok, entry); err != nil {
+		t.Errorf("trailing whitespace: %v", err)
+	}
+}
+
+func TestBackupKeepsTheOriginal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	orig := "{\"mine\": true}\n"
+	os.WriteFile(path, []byte(orig), 0o600)
+	if err := Add(path, entry); err != nil {
+		t.Fatal(err)
+	}
+	// The executable moved: the entry is replaced, the backup is not.
+	if err := Add(path, Entry{Command: "/new/cortex", Args: []string{"mcp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if bak, _ := os.ReadFile(path + ".bak"); string(bak) != orig {
+		t.Errorf("backup = %q, want the user's original", bak)
+	}
+	// Nor is one that the user keeps there created by a replacement.
+	os.Remove(path + ".bak")
+	if err := Add(path, entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".bak"); err == nil {
+		t.Error("a replacement wrote a backup of Cortex's own entry")
+	}
+}
+
+func TestReadOnlyFileIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	os.WriteFile(path, []byte(`{"a":1}`), 0o444)
+	err := Add(path, entry)
+	if !errors.Is(err, ErrReadOnly) || !strings.Contains(err.Error(), "by hand") {
+		t.Fatalf("err = %v", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != `{"a":1}` {
+		t.Errorf("file changed: %s", got)
+	}
+	if _, err := os.Stat(path + ".bak"); err == nil {
+		t.Error("backup for a refused change")
+	}
+}
+
+func TestAddKeepsBOMAndPermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mcp.json")
+	os.WriteFile(path, []byte("\xef\xbb\xbf{\"a\": 1}"), 0o640)
+	os.Chmod(path, 0o640)
+	if err := Add(path, entry); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.HasPrefix(string(got), "\xef\xbb\xbf{") || strings.Count(string(got), "\xef\xbb\xbf") != 1 {
+		t.Errorf("BOM not kept once: %q", got)
+	}
+	if st, _ := os.Stat(path); runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v", st.Mode().Perm())
+	}
+	if s, _ := Status(path, entry); s != "connected" {
+		t.Errorf("status = %q", s)
+	}
+	// No BOM stays no BOM.
+	p2 := filepath.Join(t.TempDir(), "x.json")
+	os.WriteFile(p2, []byte(`{}`), 0o600)
+	Add(p2, entry)
+	if got, _ := os.ReadFile(p2); strings.HasPrefix(string(got), "\xef") {
+		t.Error("a BOM was added")
 	}
 }

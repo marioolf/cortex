@@ -100,3 +100,20 @@ test('gemini: messages', () => {
 test('empty pages give no messages', () => {
   for (const s of [chatgpt, claude, gemini]) assert.deepEqual(s.messages(document('<div>hello</div>')), []);
 });
+
+test('chatgpt: a .markdown nested in another matched container is not duplicated', () => {
+  const doc = document(`
+    <div data-message-author-role="assistant" data-message-id="m1">
+      <div class="markdown outer"><p>Once.</p>
+        <div class="markdown inner"><p>Inner once.</p></div>
+      </div>
+      <div class="markdown second"><p>Second block.</p></div>
+    </div>
+    <div data-message-author-role="assistant" data-message-id="m2"><div data-message-author-role="assistant"><div class="markdown"><p>Nested message.</p></div></div></div>`);
+  const msgs = chatgpt.messages(doc);
+  assert.deepEqual(msgs, [
+    { role: 'assistant', text: 'Once.\n\nInner once.\n\nSecond block.' },
+    { role: 'assistant', text: 'Nested message.' },
+  ]);
+  assert.equal(msgs[0].text.split('Inner once.').length, 2);
+});

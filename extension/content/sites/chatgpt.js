@@ -39,12 +39,12 @@
 
     messages(doc) {
       const out = [];
-      for (const el of doc.querySelectorAll('[data-message-author-role]')) {
+      for (const el of outermost(Array.from(doc.querySelectorAll('[data-message-author-role]')))) {
         const role = md.attr(el, 'data-message-author-role');
         if (role !== 'user' && role !== 'assistant') continue;
         let text;
         if (role === 'assistant') {
-          const parts = Array.from(el.querySelectorAll('.markdown'));
+          const parts = outermost(Array.from(el.querySelectorAll('.markdown')));
           text = parts.length
             ? parts.map((p) => md.toMarkdown(p, site)).filter(Boolean).join('\n\n')
             : md.toMarkdown(el, site);
@@ -57,6 +57,17 @@
       return out;
     },
   };
+
+  // Of a list of matched elements, the ones that are not inside another one of
+  // the list: a nested match would be converted twice, once on its own and once
+  // as part of its container.
+  function outermost(els) {
+    const set = new Set(els);
+    return els.filter((el) => {
+      for (let p = el.parentNode; p; p = p.parentNode) if (set.has(p)) return false;
+      return true;
+    });
+  }
 
   // User text is plain text with newlines; keep it as typed.
   function userText(box) { return (box.textContent || '').replace(/\r\n/g, '\n').trim(); }

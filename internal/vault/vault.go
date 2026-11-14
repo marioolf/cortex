@@ -57,12 +57,20 @@ const (
 	Detached
 )
 
+// Key identifies a session in the vault: the same id may exist under two
+// sources (a ChatGPT conversation and a claude.ai one, say), and they must
+// never share a note.
+type Key struct{ Source, ID string }
+
+// KeyOf is the key of a session.
+func KeyOf(s *session.Session) Key { return Key{s.Source, s.ID} }
+
 type Vault struct {
-	Root  string
-	Loc   *time.Location    // time zone for dates shown in notes
-	Now   func() time.Time  // dates a note whose session has no timestamp at all
-	index map[string]string // session ID -> note path
-	src   map[string]string // session ID -> source, as written in the note
+	Root   string
+	Loc    *time.Location   // time zone for dates shown in notes
+	Now    func() time.Time // dates a note whose session has no timestamp at all
+	index  map[Key]string   // session -> note path
+	counts map[string]int   // source -> notes, kept in step with index
 }
 
 func Open(root string) (*Vault, error) {
@@ -80,8 +88,8 @@ func Open(root string) (*Vault, error) {
 
 // Reindex rebuilds the session-to-note index from the files on disk.
 func (v *Vault) Reindex() error {
-	v.index = map[string]string{}
-	v.src = map[string]string{}
+	v.index = map[Key]string{}
+	v.counts = map[string]int{}
 	root := v.Root
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -91,8 +99,7 @@ func (v *Vault) Reindex() error {
 		// into Obsidian's .trash is still the note for its session.
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {
 			if id, source := noteHead(path); id != "" {
-				v.index[id] = path
-				v.src[id] = source
+				v.add(Key{source, id}, path)
 			}
 		}
 		return nil
@@ -104,15 +111,23 @@ var (
 	sourceLine  = regexp.MustCompile(`(?m)^source: (".*")\r?$`)
 )
 
+// add records the note of k. A second note for the same key replaces the
+// first, as it always did.
+func (v *Vault) add(k Key, path string) {
+	if _, ok := v.index[k]; !ok && k.Source != "" {
+		v.counts[k.Source]++
+	}
+	v.index[k] = path
+}
+
 // SourceCounts returns how many notes each source has, as read from the
 // frontmatter. Web sources are counted from here because nothing collects
-// them again after a restart.
+// them again after a restart. It is cheap: an import calls it once per
+// conversation.
 func (v *Vault) SourceCounts() map[string]int {
-	out := map[string]int{}
-	for _, s := range v.src {
-		if s != "" {
-			out[s]++
-		}
+	out := make(map[string]int, len(v.counts))
+	for s, n := range v.counts {
+		out[s] = n
 	}
 	return out
 }
@@ -146,14 +161,15 @@ func noteHead(path string) (id, source string) {
 // existing one. Everything outside the markers is left exactly as it is.
 func (v *Vault) Write(s *session.Session) (Result, error) {
 	block := v.block(s)
-	path, ok := v.index[s.ID]
+	key := KeyOf(s)
+	path, ok := v.index[key]
 	if ok && !exists(path) {
 		// The vault stays open across rounds, so the user may have renamed
 		// the note since we indexed it. Look again before making a duplicate.
 		if err := v.Reindex(); err != nil {
 			return 0, err
 		}
-		path, ok = v.index[s.ID]
+		path, ok = v.index[key]
 	}
 	if ok {
 		old, err := os.ReadFile(path)
@@ -221,8 +237,7 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 	if err := writeAtomic(path, b.String()); err != nil {
 		return 0, err
 	}
-	v.index[s.ID] = path
-	v.src[s.ID] = s.Source
+	v.add(key, path)
 	return Created, nil
 }
 

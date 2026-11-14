@@ -239,7 +239,7 @@ func (e *Engine) Sync() Stats {
 		}
 		delete(e.pending, key)
 		if res != vault.Detached {
-			e.remember(cfg, s.ID, session.Project(s.Cwd))
+			e.remember(cfg, vault.KeyOf(s), session.Project(s.Cwd))
 		}
 		switch res {
 		case vault.Created:
@@ -279,11 +279,7 @@ func (e *Engine) Sync() Stats {
 			if cfg.ProjectExcluded(project) {
 				return
 			}
-			s.Title = red.Apply(s.Title)
-			for i := range s.Messages {
-				// Shorten only after redacting: see session.ShortenToolLines.
-				s.Messages[i].Text = session.ShortenToolLines(red.Apply(s.Messages[i].Text))
-			}
+			scrub(s, red)
 			write(s)
 		}, warn)
 	}

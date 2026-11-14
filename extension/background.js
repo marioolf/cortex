@@ -1,8 +1,9 @@
 // Service worker: the only place that talks to Cortex (127.0.0.1). Content
 // scripts run on https pages, where fetching http://127.0.0.1 is subject to
 // mixed-content and private-network rules; the worker is not.
-importScripts('lib/settings.js');
+importScripts('lib/settings.js', 'lib/util.js');
 const { ext, load, validPort, baseUrl } = CortexSettings;
+const { badge } = CortexUtil;
 
 const TIMEOUT_MS = 10000;
 
@@ -34,10 +35,10 @@ async function call(settings, path, init) {
 async function setStatus(error, extra) {
   const state = error ? error : 'ok';
   await ext.storage.local.set({ status: Object.assign({ state, at: Date.now() }, extra || {}) });
-  const bad = error === 'down' || error === 'bad-code' || error === 'no-code' || error === 'bad-port';
+  const { bad, title } = badge(error);
   await ext.action.setBadgeText({ text: bad ? '!' : '' });
   if (bad) await ext.action.setBadgeBackgroundColor({ color: '#b3261e' });
-  await ext.action.setTitle({ title: 'Cortex' + (bad ? ': ' + (error === 'down' ? 'not running' : 'check pairing code and port') : '') });
+  await ext.action.setTitle({ title });
 }
 
 async function ingest(payload) {

@@ -53,13 +53,13 @@ func CountMessages(text string) int { return len(roleHead.FindAllStringIndex(tex
 
 // note reads the note of a session and locates its conversation block:
 // old[i:j] is the block including both markers.
-func (v *Vault) note(id string) (path string, old []byte, i, j int, err error) {
-	path, ok := v.index[id]
+func (v *Vault) note(k Key) (path string, old []byte, i, j int, err error) {
+	path, ok := v.index[k]
 	if ok && !exists(path) {
 		if err = v.Reindex(); err != nil {
 			return
 		}
-		path, ok = v.index[id]
+		path, ok = v.index[k]
 	}
 	if !ok {
 		err = ErrNoNote
@@ -93,8 +93,8 @@ func summarySpan(head []byte) (a, b int) {
 }
 
 // Summary returns the conversation hash the note's summary was made for.
-func (v *Vault) Summary(id string) (hash string, exists bool) {
-	_, old, i, _, err := v.note(id)
+func (v *Vault) Summary(k Key) (hash string, exists bool) {
+	_, old, i, _, err := v.note(k)
 	if err != nil {
 		return "", false
 	}
@@ -112,8 +112,8 @@ func (v *Vault) Summary(id string) (hash string, exists bool) {
 
 // ConversationText returns the text between the conversation markers (what
 // Cortex wrote, so already redacted) and the hash of the whole block.
-func (v *Vault) ConversationText(id string) (text, hash string, err error) {
-	_, old, i, j, err := v.note(id)
+func (v *Vault) ConversationText(k Key) (text, hash string, err error) {
+	_, old, i, j, err := v.note(k)
 	if err != nil {
 		return "", "", err
 	}
@@ -123,8 +123,8 @@ func (v *Vault) ConversationText(id string) (text, hash string, err error) {
 }
 
 // ModTime is when the note file last changed.
-func (v *Vault) ModTime(id string) (t time.Time, ok bool) {
-	path, found := v.index[id]
+func (v *Vault) ModTime(k Key) (t time.Time, ok bool) {
+	path, found := v.index[k]
 	if !found {
 		return t, false
 	}
@@ -141,8 +141,8 @@ func (v *Vault) ModTime(id string) (t time.Time, ok bool) {
 // conversation changed since hash, nothing is written and ErrStale comes back.
 // The note keeps its modification time, so summarising an old note does not
 // make it look recent.
-func (v *Vault) WriteSummary(id, hash, tool, text string) error {
-	path, old, i, j, err := v.note(id)
+func (v *Vault) WriteSummary(k Key, hash, tool, text string) error {
+	path, old, i, j, err := v.note(k)
 	if err != nil {
 		return err
 	}
@@ -172,26 +172,26 @@ func (v *Vault) WriteSummary(id, hash, tool, text string) error {
 }
 
 // NotePath is where the note of a session lives, "" if there is none.
-func (v *Vault) NotePath(id string) string { return v.index[id] }
+func (v *Vault) NotePath(k Key) string { return v.index[k] }
 
-// SessionOf finds the session of a note given by a path relative to the vault
+// SessionOf finds the key of the session of a note given by a path relative to the vault
 // or absolute inside it. A path that leaves the vault, or a file that is not a
 // Cortex note, is an error.
-func (v *Vault) SessionOf(path string) (string, error) {
+func (v *Vault) SessionOf(path string) (Key, error) {
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(v.Root, path)
 	}
 	path = filepath.Clean(path)
 	rel, err := filepath.Rel(v.Root, path)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%s is not inside the vault %s", path, v.Root)
+		return Key{}, fmt.Errorf("%s is not inside the vault %s", path, v.Root)
 	}
 	if err := v.Reindex(); err != nil { // the note may be newer than the index
-		return "", err
+		return Key{}, err
 	}
-	id, _ := noteHead(path)
+	id, source := noteHead(path)
 	if id == "" {
-		return "", fmt.Errorf("%s is not a note written by Cortex", path)
+		return Key{}, fmt.Errorf("%s is not a note written by Cortex", path)
 	}
-	return id, nil
+	return Key{source, id}, nil
 }

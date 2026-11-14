@@ -195,9 +195,12 @@ ChatGPT, claude.ai and Gemini keep your conversations on their servers, not on
 your disk, so Cortex gets them in two other ways. Both write the same notes as
 every other source (`Chats/chatgpt/`, `Chats/claude-ai/`, `Chats/gemini/`), and
 a conversation that arrives both ways is one note, because the note is found
-by the conversation's id. A web note is dated when Cortex first received it if
-the conversation carries no times (the extension cannot see them), and has a
-`url:` line in its frontmatter when the extension sent one.
+by the source and the conversation's id (the same id under two sources is two
+notes). A web note is dated when Cortex first received it if the conversation
+carries no times (the extension cannot see them). The `url:` line in its
+frontmatter is written only when the extension creates the note: a note that
+already existed, for example one made by importing an export, does not get it
+later, even if the extension pushes that conversation afterwards.
 
 ### Import an export
 
@@ -215,9 +218,21 @@ cortex import FILE [-vault DIR] [-config FILE]
 prints `N conversations: a created, b updated, c unchanged, d failed, e could
 not be read` and exits with status 1 if any conversation could not be written
 or the file is not a ChatGPT or Claude export. Conversations in the file that
-could not be decoded are counted in `e`, and the others are saved. The same is
+could not be used are counted in `e`, and the others are saved. The same is
 available in the panel's "Web chats" section ("Import an export": choose the
 file and press Import; files up to 2 GiB, one import at a time).
+
+The file is read as a stream, one conversation at a time, so memory use does
+not depend on the size of the export. These limits protect against hostile or
+broken files: a conversation of more than 64 MiB of JSON is skipped (and
+counted in `e`) without being loaded; more than 64 MiB of blank space between
+two conversations stops the import with an error; one file inside a zip may not
+decompress to more than 2 GiB, nor all the files together to more than 8 GiB. A
+conversation without an id is skipped, and when one export holds the same id
+twice the first one is kept and the later ones are skipped; both are counted in
+`e` and named in the messages printed. Any one message longer than 1,000,000
+characters is cut there, whatever its source (also for collected sessions and the
+extension), and ends with a line `[… N more characters not saved by Cortex]`.
 
 An import is something you ask for by hand, so it ignores Pause and the
 source switches: a paused Cortex, or one with ChatGPT turned off, still saves
@@ -243,7 +258,11 @@ involved. Requests that carry an `Origin` other than an extension's are refused
 and no CORS headers are sent, so a web page cannot post conversations even if
 it learned the code. Unlike an import, the extension respects Pause and the
 source switches: while paused, or with a web source off, Cortex answers
-`skipped` and writes nothing.
+`skipped` and writes nothing. The extension does not count that as saved: its
+popup says "Cortex is paused or this site is turned off in Cortex" and it tries
+again every 60 seconds while the tab is visible, so the conversation is saved
+once you resume. Without a pairing code in its options it says "Not paired
+yet" and does not try at all.
 
 ## Let AI tools read the vault
 
@@ -282,9 +301,13 @@ Three tools, all read-only:
 
 Only notes written by Cortex (those with a `session` line in the frontmatter)
 are searched; `.trash`, `.obsidian` and `.git` folders are skipped, and
-symlinks are not followed.
+symlinks are not followed. Every value printed from a note (title, project,
+source, start, snippets) is shown on one line, with control characters and line
+separators replaced by spaces; a note whose file name contains such characters
+is left out of `search` and `recent`, since `read` could not be given its path
+as printed.
 
-Notes can quote text written by third parties, so every `search` and `read`
+Notes can quote text written by third parties, so every `search`, `recent` and `read`
 result starts with a fixed line saying that what follows is a record of past
 conversations, to be treated as data and not as instructions, and `read` wraps
 the note between two delimiter lines that carry a short hash of the content.
@@ -299,19 +322,30 @@ what to do, using the path of the Cortex program that is running:
 - Claude Desktop and Cursor: buttons "Add to Claude Desktop" and "Add to
   Cursor", shown when the tool's config folder exists. They add only the
   `mcpServers.cortex` entry to the config file, keep everything else in it as it
-  is, save the old file as `.bak` next to it, and refuse (telling you to paste
-  the snippet by hand) if the file is not a JSON object. Restart the tool
+  is (also a UTF-8 BOM and the file's permissions), and save the file as `.bak`
+  next to it the first time Cortex is added (updating an existing entry later
+  leaves the `.bak` alone, so it stays your original). They refuse, telling you
+  to paste the snippet by hand, if the file is not a JSON object, has anything
+  after the object, or is read-only. Restart the tool
   afterwards. The same JSON is shown to paste by hand
   (`%APPDATA%\Claude\claude_desktop_config.json` or
   `~/Library/Application Support/Claude/claude_desktop_config.json` for Claude
   Desktop, `~/.cursor/mcp.json` for Cursor).
 - VS Code: the `mcp.json` form, with `servers`.
-- Claude Code: `claude mcp add --scope user cortex -- "/path/to/cortex" mcp`.
-  On Windows with WSL, the panel also shows the command to run inside WSL, which
-  starts the Windows program through `/mnt/c/...`; it finds its own config, so it
-  needs no `-vault`.
+- Claude Code: `claude mcp add --scope user cortex -- '/path/to/cortex' mcp`,
+  quoted for the shell the panel names: single quotes in bash and zsh (so `$`
+  and `!` are inert) and in PowerShell on Windows (where double quotes would
+  expand `$` and backticks). On Windows with WSL, the panel also shows the
+  command to run inside WSL (bash), which starts the Windows program through
+  `/mnt/c/...` (it assumes your drives are mounted under `/mnt`, the WSL
+  default); it finds its own config, so it needs no `-vault`.
 - Codex CLI: a `[mcp_servers.cortex]` table for `~/.codex/config.toml`.
-- OpenCode: an `mcp` entry for `opencode.json`.
+- OpenCode: `{"mcp": {"servers": {"cortex": {"type": "local", "command": [...]}}}}`
+  for `opencode.json`, the shape of the current OpenCode documentation and
+  published config schema (`https://opencode.ai/config.json`, where names placed
+  directly under `mcp` are marked deprecated). The panel also shows the older
+  shape, `{"mcp": {"cortex": {"type": "local", "command": [...], "enabled": true}}}`, for releases that
+  do not know `servers`.
 - A paragraph to paste into `CLAUDE.md`, `AGENTS.md` or your tool's custom
   instructions, so that agents know the notes exist and treat them as data.
 

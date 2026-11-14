@@ -40,63 +40,99 @@ const (
 	SourceClaudeAI = "claude-ai"
 )
 
-// maxEntry caps the decompressed size of one zip entry (zip bombs).
-const maxEntry = 4 << 30
+// Default caps. The element cap bounds memory (one conversation at a time is
+// held, plus working copies); the entry and total caps bound the time spent on
+// a zip bomb. They are far above any real export: the biggest known ones are a
+// few hundred MB in total, and a single conversation of 64 MiB would be a book.
+const (
+	defaultMaxElement = 64 << 20
+	defaultMaxEntry   = 2 << 30
+	defaultMaxTotal   = 8 << 30
+)
 
 // ErrUnsupported means the file is not a ChatGPT or claude.ai export.
 var ErrUnsupported = errors.New("unsupported file: expected a ChatGPT export (zip or conversations.json) or a claude.ai export (zip or conversations.json)")
 
-// SkippedError reports conversations that could not be decoded. Parse returns
-// it together with the conversations that did load, so callers should use the
-// slice even when err != nil:
-//
-//	sessions, err := importer.Parse(p)
-//	var sk *importer.SkippedError
-//	if errors.As(err, &sk) { warn(sk) } else if err != nil { return err }
-type SkippedError struct{ Skipped int }
-
-func (e *SkippedError) Error() string {
-	return fmt.Sprintf("%d conversation(s) could not be read and were skipped", e.Skipped)
+// Options changes the caps of Each; zero values mean the defaults. Tests lower
+// them.
+type Options struct {
+	MaxElement int64 // largest raw JSON of one conversation; larger ones are skipped
+	MaxEntry   int64 // largest decompressed size of one file
+	MaxTotal   int64 // most bytes read from all the files of one export
+	// Skip is told why each unreadable conversation was skipped. May be nil.
+	Skip func(reason string)
 }
 
-// Parse reads an export. path may be the zip as downloaded or one of the JSON
-// files inside it; the kind is detected from the content, not the name. Any
-// other error (unsupported file, broken zip, truncated JSON) may also come
-// with the sessions read before the failure.
-func Parse(path string) ([]*session.Session, error) {
+func (o Options) withDefaults() Options {
+	if o.MaxElement <= 0 {
+		o.MaxElement = defaultMaxElement
+	}
+	if o.MaxEntry <= 0 {
+		o.MaxEntry = defaultMaxEntry
+	}
+	if o.MaxTotal <= 0 {
+		o.MaxTotal = defaultMaxTotal
+	}
+	return o
+}
+
+// Each reads an export and calls fn for every conversation, one at a time: no
+// more than one conversation is ever held in memory. path may be the zip as
+// downloaded or one of the JSON files inside it; the kind is detected from the
+// content, not the name. unreadable counts the conversations that were skipped
+// (not decodable, too large, without an id, or an id already seen in this
+// export; the first one wins). An error from fn stops the import and is
+// returned as is. Any other error (unsupported file, broken zip, truncated
+// JSON, a cap exceeded) also stops it; the conversations before it were
+// delivered.
+func Each(path string, fn func(*session.Session) error) (unreadable int, err error) {
+	return EachWith(path, Options{}, fn)
+}
+
+// EachWith is Each with other caps.
+func EachWith(path string, opt Options, fn func(*session.Session) error) (unreadable int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	var magic [4]byte
 	n, _ := io.ReadFull(f, magic[:])
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		return 0, err
 	}
+	r := &run{opt: opt.withDefaults(), fn: fn, ids: map[string]struct{}{}}
 	if bytes.Equal(magic[:n], []byte("PK\x03\x04")) {
-		return ParseZip(f, st.Size())
+		err = r.zip(f, st.Size())
+	} else {
+		err = r.file("", f)
 	}
-	return ParseJSON(f)
+	return r.unreadable, err
 }
 
-// ParseJSON reads a bare conversations JSON file as a stream.
-func ParseJSON(r io.Reader) ([]*session.Session, error) {
-	var out []*session.Session
-	skipped, recognized, err := stream(r, func(s *session.Session) { out = append(out, s) })
-	return finish(out, skipped, recognized, err)
+// run is the state of one Each call.
+type run struct {
+	opt        Options
+	fn         func(*session.Session) error
+	unreadable int
+	fnErr      error               // set when the callback failed
+	total      int64               // bytes read so far from all files
+	ids        map[string]struct{} // source + id of the conversations delivered
 }
 
-// ParseZip reads the conversations files of an export zip without extracting
+// conversations.json, or conversations-000.json and so on.
+var convFile = regexp.MustCompile(`^conversations(-\d+)?\.json$`)
+
+// zip reads the conversations files of an export zip without extracting
 // anything. Every other entry is ignored.
-func ParseZip(r io.ReaderAt, size int64) ([]*session.Session, error) {
-	zr, err := zip.NewReader(r, size)
+func (r *run) zip(ra io.ReaderAt, size int64) error {
+	zr, err := zip.NewReader(ra, size)
 	if err != nil {
-		return nil, fmt.Errorf("not a readable zip file: %w", err)
+		return fmt.Errorf("not a readable zip file: %w", err)
 	}
 	var files []*zip.File
 	for _, f := range zr.File {
@@ -105,54 +141,61 @@ func ParseZip(r io.ReaderAt, size int64) ([]*session.Session, error) {
 		}
 	}
 	if len(files) == 0 {
-		return nil, ErrUnsupported
+		return ErrUnsupported
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
-	var out []*session.Session
-	skipped, recognized := 0, 0
 	for _, f := range files {
-		if f.UncompressedSize64 > maxEntry {
-			return out, fmt.Errorf("%s: larger than %d GiB, refusing to read it", f.Name, maxEntry>>30)
+		if f.UncompressedSize64 > uint64(r.opt.MaxEntry) {
+			return fmt.Errorf("%s: larger than %s, refusing to read it", f.Name, size64(r.opt.MaxEntry))
 		}
 		rc, err := f.Open()
 		if err != nil {
-			return out, fmt.Errorf("%s: %w", f.Name, err)
+			return fmt.Errorf("%s: %w", f.Name, err)
 		}
-		s, rec, err := stream(&capReader{r: rc}, func(s *session.Session) { out = append(out, s) })
+		err = r.file(f.Name, rc)
 		rc.Close()
-		skipped += s
-		recognized += rec
 		if err != nil {
-			return finish(out, skipped, recognized, fmt.Errorf("%s: %w", f.Name, err))
+			return err
 		}
 	}
-	return finish(out, skipped, recognized, nil)
+	return nil
 }
 
-// conversations.json, or conversations-000.json and so on.
-var convFile = regexp.MustCompile(`^conversations(-\d+)?\.json$`)
-
-func finish(out []*session.Session, skipped, recognized int, err error) ([]*session.Session, error) {
-	if err != nil {
-		return out, err
+// file streams one JSON file; name is used in errors, "" for a bare file.
+func (r *run) file(name string, rd io.Reader) error {
+	err := r.stream(&capReader{r: rd, run: r})
+	if err != nil && r.fnErr == nil && name != "" && !errors.Is(err, ErrUnsupported) {
+		return fmt.Errorf("%s: %w", name, err)
 	}
-	if skipped > 0 {
-		return out, &SkippedError{Skipped: skipped}
-	}
-	return out, nil
+	return err
 }
 
-// capReader fails once more than maxEntry bytes were read.
+func size64(n int64) string {
+	if n >= 1<<30 && n%(1<<30) == 0 {
+		return fmt.Sprintf("%d GiB", n>>30)
+	}
+	return fmt.Sprintf("%d MiB", n>>20)
+}
+
+// errCap marks a size cap that was exceeded.
+var errCap = errors.New("size cap exceeded")
+
+// capReader fails once the entry or the whole export is bigger than allowed.
 type capReader struct {
 	r io.Reader
 	n int64
+	*run
 }
 
 func (c *capReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
-	if c.n > maxEntry {
-		return n, fmt.Errorf("more than %d GiB after decompression, refusing to read it", maxEntry>>30)
+	c.run.total += int64(n)
+	switch {
+	case c.n > c.opt.MaxEntry:
+		return n, fmt.Errorf("%w: more than %s after decompression, refusing to read it", errCap, size64(c.opt.MaxEntry))
+	case c.run.total > c.opt.MaxTotal:
+		return n, fmt.Errorf("%w: more than %s read from this export, refusing to go on", errCap, size64(c.opt.MaxTotal))
 	}
 	return n, err
 }
@@ -171,52 +214,95 @@ type conv struct {
 	ChatMessages []claudeMessage `json:"chat_messages"`
 }
 
-// stream decodes the top-level array one element at a time. recognized counts
-// elements that look like a conversation of either format.
-func stream(r io.Reader, emit func(*session.Session)) (skipped, recognized int, err error) {
-	dec := json.NewDecoder(r)
-	tok, err := dec.Token()
-	if err != nil {
-		return 0, 0, fmt.Errorf("%w (%v)", ErrUnsupported, err)
+// skip counts one unreadable conversation.
+func (r *run) skip(reason string) {
+	r.unreadable++
+	if r.opt.Skip != nil {
+		r.opt.Skip(reason)
 	}
-	if d, ok := tok.(json.Delim); !ok || d != '[' {
-		return 0, 0, ErrUnsupported
+}
+
+// stream decodes the top-level array one element at a time.
+func (r *run) stream(rd io.Reader) error {
+	sc := newScanner(rd)
+	if err := sc.start(r.opt.MaxElement); err != nil {
+		if errors.Is(err, errCap) || errors.Is(err, errTooMuchSpace) {
+			return err
+		}
+		return fmt.Errorf("%w (%v)", ErrUnsupported, err)
 	}
-	seen := 0
-	for dec.More() {
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			return skipped, recognized, fmt.Errorf("invalid JSON after %d conversation(s): %w", seen, err)
+	seen, recognized := 0, 0 // recognized: elements that look like a conversation of either format
+	for first := true; ; first = false {
+		raw, size, tooBig, done, err := sc.next(first, r.opt.MaxElement)
+		switch {
+		case err == nil:
+		case errors.Is(err, errCap):
+			return fmt.Errorf("after %d conversation(s): %w", seen, err)
+		case errors.Is(err, errTooMuchSpace):
+			return fmt.Errorf("after %d conversation(s): more than %s of whitespace between elements, refusing to read on", seen, size64(r.opt.MaxElement))
+		default:
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return fmt.Errorf("invalid JSON after %d conversation(s): %w", seen, err)
+		}
+		if done {
+			break
 		}
 		seen++
+		if tooBig {
+			recognized++
+			r.skip(fmt.Sprintf("conversation %d skipped: larger than %s (%d MiB)", seen, size64(r.opt.MaxElement), size>>20))
+			continue
+		}
 		var probe struct {
 			Mapping      json.RawMessage `json:"mapping"`
 			ChatMessages json.RawMessage `json:"chat_messages"`
 		}
 		if json.Unmarshal(raw, &probe) != nil || (probe.Mapping == nil && probe.ChatMessages == nil) {
 			// An element that is neither format: not counted as a conversation.
+			if !json.Valid(raw) {
+				recognized++
+				r.skip(fmt.Sprintf("conversation %d skipped: not valid JSON", seen))
+			}
 			continue
 		}
 		recognized++
 		var c conv
 		if err := json.Unmarshal(raw, &c); err != nil {
-			skipped++
+			r.skip(fmt.Sprintf("conversation %d skipped: %v", seen, err))
 			continue
 		}
+		gpt := probe.Mapping != nil
+		raw, probe.Mapping, probe.ChatMessages = nil, nil, nil
 		var s *session.Session
-		if probe.Mapping != nil {
+		if gpt {
 			s = fromChatGPT(&c)
 		} else {
 			s = fromClaude(&c)
 		}
-		if s != nil && len(s.Messages) > 0 {
-			emit(s)
+		if s == nil || len(s.Messages) == 0 {
+			continue
+		}
+		if strings.TrimSpace(s.ID) == "" {
+			r.skip(fmt.Sprintf("conversation %d (%q) skipped: it has no id", seen, firstLine(s.Title)))
+			continue
+		}
+		key := s.Source + "\x00" + s.ID
+		if _, dup := r.ids[key]; dup {
+			r.skip(fmt.Sprintf("conversation %d skipped: its id %q already appeared earlier in this file (the first one is kept)", seen, s.ID))
+			continue
+		}
+		r.ids[key] = struct{}{}
+		if err := r.fn(s); err != nil {
+			r.fnErr = err
+			return err
 		}
 	}
 	if seen > 0 && recognized == 0 {
-		return 0, 0, ErrUnsupported
+		return ErrUnsupported
 	}
-	return skipped, recognized, nil
+	return nil
 }
 
 // --- helpers shared by both formats ---

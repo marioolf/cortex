@@ -1,9 +1,8 @@
 package engine
 
 import (
-	"errors"
-
 	"github.com/marioolf/cortex/internal/importer"
+	"github.com/marioolf/cortex/internal/session"
 )
 
 // maxImportErrors is how many failure messages an ImportSummary keeps.
@@ -22,26 +21,30 @@ type ImportSummary struct {
 
 // Import reads an export (see package importer) and ingests every conversation
 // as explicit: the user chose the file, so pause and source switches do not
-// apply. A conversation that could not be decoded is counted, not fatal. Any
-// other parse error (unsupported file, a zip that breaks half way) is returned,
-// together with the summary of what was read before it.
+// apply. Conversations are ingested as they are decoded, so memory does not
+// depend on the size of the file. A conversation that could not be used (not
+// decodable, too large, no id, an id repeated in the file) is counted, not
+// fatal. Any other error (unsupported file, a zip that breaks half way, a size
+// cap) is returned, together with the summary of what was read before it.
 func (e *Engine) Import(path string) (ImportSummary, error) {
+	return e.importWith(path, importer.Options{})
+}
+
+func (e *Engine) importWith(path string, opt importer.Options) (ImportSummary, error) {
 	var sum ImportSummary
-	sessions, err := importer.Parse(path)
-	var sk *importer.SkippedError
-	if errors.As(err, &sk) {
-		sum.Unreadable = sk.Skipped
-		err = nil
+	addErr := func(msg string) {
+		if len(sum.Errors) < maxImportErrors {
+			sum.Errors = append(sum.Errors, msg)
+		}
 	}
-	sum.Conversations = len(sessions) + sum.Unreadable
-	for _, s := range sessions {
+	opt.Skip = func(reason string) { addErr(reason) }
+	unreadable, err := importer.EachWith(path, opt, func(s *session.Session) error {
+		sum.Conversations++
 		res, werr := e.Ingest(s, true)
 		switch {
 		case werr != nil:
 			sum.Failed++
-			if len(sum.Errors) < maxImportErrors {
-				sum.Errors = append(sum.Errors, werr.Error())
-			}
+			addErr(werr.Error())
 		case res == IngestCreated:
 			sum.Created++
 		case res == IngestUpdated:
@@ -49,6 +52,9 @@ func (e *Engine) Import(path string) (ImportSummary, error) {
 		default:
 			sum.Unchanged++
 		}
-	}
+		return nil
+	})
+	sum.Unreadable = unreadable
+	sum.Conversations += unreadable
 	return sum, err
 }

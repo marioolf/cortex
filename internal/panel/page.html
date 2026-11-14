@@ -505,9 +505,10 @@ function renderConnect(s) {
     snippet(vscode, "the VS Code mcp.json"),
     el("p", "Copilot's own agent reads the \"mcpServers\" form above instead, from ~/.copilot/mcp-config.json or a .mcp.json in the project root.", "muted")));
 
-  const cc = [el("p", "Run this in a terminal:"), snippet(m.claude_code, "the Claude Code command")];
+  const cc = [el("p", "Run this in " + m.claude_code_shell + ":"), snippet(m.claude_code, "the Claude Code command")];
   if (m.claude_code_wsl) {
-    cc.push(el("p", "To use Cortex from Claude Code running inside WSL, run this inside WSL instead. It starts the Windows program, which finds your settings and vault by itself:"));
+    cc.push(el("p", "To use Cortex from Claude Code running inside WSL, run this inside WSL (bash) instead. It starts the Windows program, which finds your settings and vault by itself:"));
+    cc.push(el("p", "It assumes your Windows drives are mounted under /mnt, which is the WSL default.", "muted"));
     cc.push(snippet(m.claude_code_wsl, "the Claude Code command for WSL"));
   }
   parts.push(section("Claude Code", ...cc));
@@ -516,10 +517,18 @@ function renderConnect(s) {
   parts.push(section("Codex CLI",
     el("p", "Add this to ~/.codex/config.toml:"), snippet(codex, "the Codex config")));
 
-  const oc = JSON.stringify({ mcp: { servers: { cortex: { type: "local", command: [m.command].concat(args) } } } }, null, 2);
+  // Current OpenCode (the "latest" docs and the published config schema): servers
+  // live under mcp.servers, and names directly under mcp are marked deprecated there.
+  // Releases before that read only the direct form, where a key "servers" would be
+  // taken for a server and rejected, so the old shape is offered separately.
+  const ocServer = { type: "local", command: [m.command].concat(args) };
+  const oc = JSON.stringify({ mcp: { servers: { cortex: ocServer } } }, null, 2);
+  const ocOld = JSON.stringify({ mcp: { cortex: Object.assign({ enabled: true }, ocServer) } }, null, 2);
   parts.push(section("OpenCode",
     el("p", "Add this to ~/.config/opencode/opencode.json (or opencode.json in a project), merging it with what is there:"),
-    snippet(oc, "the OpenCode config")));
+    snippet(oc, "the OpenCode config"),
+    el("p", "Older OpenCode releases expect the server directly under \"mcp\" instead. If yours reports an error about \"servers\", use this:", "muted"),
+    snippet(ocOld, "the OpenCode config for older releases")));
 
   parts.push(section("Instructions for your agent",
     el("p", "Paste this into CLAUDE.md, AGENTS.md or your tool's custom instructions so the agent knows the notes exist:"),

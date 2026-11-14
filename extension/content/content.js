@@ -4,10 +4,9 @@
 (function () {
   'use strict';
   const { ext, load } = CortexSettings;
-  const { fingerprint, backoff } = CortexUtil;
+  const { fingerprint, paired, outcome, nextGap, SKIPPED_RETRY_MS } = CortexUtil;
 
   const DEBOUNCE_MS = 3000;      // quiet time after the last DOM change
-  const MIN_INTERVAL_MS = 5000;  // never send more often than this
   const URL_POLL_MS = 1000;      // SPA navigation does not fire page events
 
   const site = (globalThis.CortexSites || []).find((s) => s.matches(location));
@@ -20,18 +19,19 @@
   let lastSentAt = 0;           // ms, last accepted send for the current conversation
   let lastAttemptAt = 0;
   let failures = 0;
-  let status = 'idle';          // idle | saved | not-conversation | off | paused | down | bad-code
+  let status = 'idle';          // idle | saved | skipped | rejected | not-conversation | off | paused | no-code | down | bad-code
   let pending = null;           // last extracted conversation not yet accepted
   let inFlight = false;
 
   function enabled() {
-    return settings && !settings.paused && settings.sites[site.id] !== false;
+    return settings && !settings.paused && settings.sites[site.id] !== false && paired(settings);
   }
 
   function currentState() {
     if (!site.conversationId(location)) return 'not-conversation';
     if (settings && settings.paused) return 'paused';
     if (settings && settings.sites[site.id] === false) return 'off';
+    if (settings && !paired(settings)) return 'no-code'; // no loop runs until a code exists
     return status;
   }
 
@@ -64,8 +64,10 @@
     if (!conv || conv.id !== id) return { state: currentState() };
     if (sentHash[id] === fingerprint(conv)) return { state: currentState() };
 
-    const wait = lastAttemptAt + (failures ? backoff(failures) : MIN_INTERVAL_MS) - Date.now();
+    const wait = lastAttemptAt + nextGap(status, failures) - Date.now();
     if (!force && wait > 0) { schedule(wait); return { state: 'pending' }; }
+    // Retrying a "skipped" push is for a tab someone is looking at.
+    if (!force && status === 'skipped' && document.visibilityState === 'hidden') { schedule(SKIPPED_RETRY_MS); return { state: 'pending' }; }
 
     inFlight = true;
     lastAttemptAt = Date.now();
@@ -75,19 +77,13 @@
     inFlight = false;
     if (id !== convId) return { state: currentState() };
 
-    if (res && res.ok) {
-      sentHash[id] = fingerprint(conv);
-      lastSentAt = Date.now();
-      failures = 0;
-      status = 'saved';
-    } else if (res && (res.error === 'invalid' || res.error === 'too-large')) {
-      sentHash[id] = fingerprint(conv); // retrying the same content cannot help
-      status = 'rejected';
-    } else {
-      failures++;
-      status = res && res.error === 'bad-code' ? 'bad-code' : 'down';
-      schedule(backoff(failures));
-    }
+    const o = outcome(res, failures);
+    failures = o.failures;
+    status = o.status;
+    if (o.sent) sentHash[id] = fingerprint(conv);
+    if (o.status === 'saved') lastSentAt = Date.now();
+    if (o.status === 'skipped') schedule(o.gap);
+    else if (o.status === 'down' || o.status === 'bad-code') schedule(o.gap);
     return { state: currentState() };
   }
 
@@ -117,7 +113,12 @@
 
   ext.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.settings) return;
-    load().then((s) => { settings = s; if (enabled()) onChange(); });
+    load().then((s) => {
+      settings = s;
+      failures = 0; // a new code or port deserves an immediate try, not the old backoff
+      if (status !== 'saved') status = 'idle';
+      if (enabled()) onChange();
+    });
   });
 
   load().then((s) => { settings = s; start(); });

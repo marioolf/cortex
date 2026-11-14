@@ -9,6 +9,12 @@
   const IGNORED = new Set(['BUTTON', 'SVG', 'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'INPUT', 'SELECT', 'TEXTAREA', 'CANVAS', 'IFRAME', 'HEAD', 'AUDIO', 'VIDEO', 'LINK', 'META']);
   const INLINE = new Set(['A', 'SPAN', 'STRONG', 'B', 'EM', 'I', 'CODE', 'DEL', 'S', 'STRIKE', 'U', 'MARK', 'SUP', 'SUB', 'SMALL', 'KBD', 'ABBR', 'CITE', 'Q', 'LABEL', 'BR', 'IMG', 'PICTURE', 'TIME', 'FONT', 'BDI', 'BDO', 'WBR', 'VAR', 'SAMP', 'DFN', 'INS']);
 
+  // Deeper than this, a subtree is taken as its plain text: the recursion below
+  // would otherwise overflow the stack on a hostile or broken page, and the
+  // conversation must still be saved.
+  const MAX_DEPTH = 500;
+  const flat = (n) => (n.textContent || '').replace(/\s+/g, ' ').trim();
+
   const tag = (n) => (n.tagName || '').toUpperCase();
   const attr = (n, a) => (n.getAttribute ? n.getAttribute(a) : null) || '';
   const isEl = (n) => n.nodeType === 1;
@@ -16,11 +22,13 @@
   function hasClass(n, c) {
     return (' ' + attr(n, 'class').replace(/\s+/g, ' ') + ' ').indexOf(' ' + c + ' ') >= 0;
   }
-  function find(n, pred) {
+  function find(n, pred, depth) {
+    depth = depth || 0;
+    if (depth >= MAX_DEPTH) return null;
     for (const k of kids(n)) {
       if (!isEl(k)) continue;
       if (pred(k)) return k;
-      const f = find(k, pred);
+      const f = find(k, pred, depth + 1);
       if (f) return f;
     }
     return null;
@@ -62,6 +70,16 @@
   function inline(n, ctx) {
     if (n.nodeType === 3) return (n.textContent || '').replace(/\s+/g, ' ');
     if (!isEl(n) || skipped(n, ctx)) return '';
+    if (ctx.depth >= MAX_DEPTH) return (n.textContent || '').replace(/\s+/g, ' ');
+    ctx.depth++;
+    try { return inlineEl(n, ctx); } finally { ctx.depth--; }
+  }
+
+  // A URL goes in the (...) of a link: parentheses, spaces and angle brackets
+  // would end or break it, so they are percent-encoded (the URL stays the same URL).
+  const encodeUrl = (u) => u.replace(/[\s()<>]/g, (c) => (c === '(' ? '%28' : c === ')' ? '%29' : encodeURIComponent(c)));
+
+  function inlineEl(n, ctx) {
     const t = tag(n);
     switch (t) {
       case 'BR': return '\n';
@@ -74,7 +92,8 @@
         const text = inlineChildren(n, ctx).trim();
         const href = attr(n, 'href');
         if (!/^(https?:|mailto:)/i.test(href) || !text) return text;
-        return text === href ? href : '[' + text + '](' + href + ')';
+        const url = encodeUrl(href);
+        return text === href && url === href ? href : '[' + text + '](' + url + ')';
       }
     }
     if (hasClass(n, 'katex')) {
@@ -91,6 +110,16 @@
 
   // ---- blocks ----
   function walkBlocks(children, out, ctx) {
+    if (ctx.depth >= MAX_DEPTH) {
+      const text = children.map((k) => (k.nodeType === 3 || (isEl(k) && !skipped(k, ctx)) ? flat(k) : '')).filter(Boolean).join(' ');
+      if (text) out.push(text);
+      return;
+    }
+    ctx.depth++;
+    try { walkLevel(children, out, ctx); } finally { ctx.depth--; }
+  }
+
+  function walkLevel(children, out, ctx) {
     let buf = '';
     for (const k of children) {
       if (k.nodeType === 3) { buf += inline(k, ctx); continue; }
@@ -104,8 +133,10 @@
     flush(buf, out);
   }
 
-  function hasBlockChild(n) {
-    return kids(n).some((k) => isEl(k) && (!INLINE.has(tag(k)) || hasBlockChild(k)) && !IGNORED.has(tag(k)));
+  function hasBlockChild(n, depth) {
+    depth = depth || 0;
+    if (depth >= MAX_DEPTH) return false;
+    return kids(n).some((k) => isEl(k) && (!INLINE.has(tag(k)) || hasBlockChild(k, depth + 1)) && !IGNORED.has(tag(k)));
   }
 
   function block(n, t, out, ctx) {
@@ -158,10 +189,12 @@
   }
 
   // Text content without buttons, svg and the like.
-  function plainText(n) {
+  function plainText(n, depth) {
+    depth = depth || 0;
     if (n.nodeType === 3) return n.textContent || '';
     if (!isEl(n) || IGNORED.has(tag(n))) return '';
-    return kids(n).map(plainText).join('');
+    if (depth >= MAX_DEPTH) return n.textContent || '';
+    return kids(n).map((k) => plainText(k, depth + 1)).join('');
   }
 
   function list(n, ctx) {
@@ -188,15 +221,16 @@
 
   function table(n, ctx) {
     const rows = [];
-    (function collect(p) {
+    (function collect(p, depth) {
+      if (depth >= MAX_DEPTH) return;
       for (const k of kids(p)) {
         if (!isEl(k) || skipped(k, ctx)) continue;
         if (tag(k) === 'TR') {
           const cells = kids(k).filter((c) => isEl(c) && (tag(c) === 'TH' || tag(c) === 'TD'));
           rows.push(cells.map((c) => inlineChildren(c, ctx).replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim()));
-        } else if (tag(k) !== 'TABLE') collect(k);
+        } else if (tag(k) !== 'TABLE') collect(k, depth + 1);
       }
-    })(n);
+    })(n, 0);
     if (!rows.length) return '';
     const width = Math.max(...rows.map((r) => r.length));
     const line = (r) => '| ' + Array.from({ length: width }, (_, i) => r[i] || '').join(' | ') + ' |';
@@ -207,14 +241,14 @@
 
   // opts.skip(element) -> true drops that element and everything under it.
   function toMarkdown(rootNode, opts) {
-    const ctx = { skip: opts && opts.skip };
+    const ctx = { skip: opts && opts.skip, depth: 0 };
     const out = [];
     if (isEl(rootNode) && !skipped(rootNode, ctx)) walkBlocks([rootNode], out, ctx);
     else if (!isEl(rootNode)) walkBlocks([rootNode], out, ctx);
     return out.join('\n\n').trim();
   }
 
-  const api = { toMarkdown, hasClass, attr, tag, kids };
+  const api = { toMarkdown, hasClass, attr, tag, kids, encodeUrl };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CortexMd = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

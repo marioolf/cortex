@@ -74,13 +74,16 @@ type sumState struct {
 	running bool
 	starts  []time.Time // when commands were started, for the rate limit
 	done    []time.Time
-	failed  map[string]failure
+	failed  map[vault.Key]failure
 	errs    []summaryError
 	lastErr string
-	cands   map[string]*candidate // by session ID; touched only while holding run
+	cands   map[vault.Key]*candidate // by source and session ID; touched only while holding run
 }
 
-type queued struct{ id, hash string }
+type queued struct {
+	id   vault.Key
+	hash string
+}
 
 // SummariesUsable tells whether the configured tool can be run right now: a
 // preset needs its program on PATH, a custom command needs an argv.
@@ -106,12 +109,12 @@ func (e *Engine) summariesWanted(cfg *config.Config, project string) bool {
 
 // remember notes that the note of a session may need a summary. Call it while
 // holding run, after the note was written or found unchanged.
-func (e *Engine) remember(cfg *config.Config, id, project string) {
+func (e *Engine) remember(cfg *config.Config, id vault.Key, project string) {
 	if !e.summariesWanted(cfg, project) {
 		return
 	}
 	if e.sum.cands == nil {
-		e.sum.cands = map[string]*candidate{}
+		e.sum.cands = map[vault.Key]*candidate{}
 	}
 	if c := e.sum.cands[id]; c != nil {
 		c.project = project
@@ -278,25 +281,25 @@ func (e *Engine) generate(s config.Summaries, text string) (string, error) {
 	return summarize.Clean(out)
 }
 
-func (e *Engine) noteLabel(v *vault.Vault, id string) string {
+func (e *Engine) noteLabel(v *vault.Vault, id vault.Key) string {
 	if p := v.NotePath(id); p != "" {
 		if rel, err := filepath.Rel(v.Root, p); err == nil {
 			return filepath.ToSlash(rel)
 		}
 	}
-	return id
+	return id.ID
 }
 
 // fail records a failure: no retry for the same content for an hour, and a
 // message the panel keeps showing. The message holds the tool's stderr
 // excerpt, never the conversation.
-func (e *Engine) fail(id, hash, label string, err error) {
+func (e *Engine) fail(id vault.Key, hash, label string, err error) {
 	now := e.now()
 	msg := fmt.Sprintf("summary of %s: %v", label, err)
 	e.sum.mu.Lock()
 	defer e.sum.mu.Unlock()
 	if e.sum.failed == nil {
-		e.sum.failed = map[string]failure{}
+		e.sum.failed = map[vault.Key]failure{}
 	}
 	e.sum.failed[id] = failure{hash, now}
 	e.sum.errs = append(e.sum.errs, summaryError{msg, now})
