@@ -19,15 +19,17 @@ which also serves a local control panel.
 | Codex CLI | its source code only |
 | OpenCode | its source code only |
 | Cursor | community descriptions of its storage only |
+| ChatGPT (web), from an export | community descriptions of the export format and invented samples only; no real export |
+| Claude (web), from an export | community descriptions of the export format and invented samples only; no real export |
+| ChatGPT, Claude and Gemini (web), through the browser extension | invented HTML only; never run against the live sites or in a real browser |
 
-The last four have only been tested with made-up samples. Expect rough edges,
-and please report sessions that come out wrong. Codex sessions that Codex has
-compressed (`.jsonl.zst`) are not read yet.
+Everything below Claude Code and Copilot has only been tested with made-up
+samples. Expect rough edges, and please report sessions that come out wrong.
+Codex sessions that Codex has compressed (`.jsonl.zst`) are not read yet.
 
-Planned, none of it implemented yet:
-
-- Web chats (ChatGPT, claude.ai, Gemini) through export import and a browser
-  extension.
+The web sources are not read from disk: they arrive by importing an export file
+(ChatGPT and Claude) or from the browser extension (ChatGPT, Claude and Gemini);
+see "Web chats". The extension is not in any browser store yet.
 
 ## Try it
 
@@ -72,7 +74,9 @@ The panel shows the last sync and any warnings, and lets you:
 
 - pause and resume capturing;
 - change the vault folder, or open it in your file manager;
-- turn sources on and off;
+- turn sources on and off (the web ones too);
+- import a ChatGPT or Claude export and pair the browser extension (see "Web
+  chats");
 - turn projects on and off (conversations outside any project are always
   saved);
 - choose whether Cortex starts when you log in;
@@ -97,6 +101,62 @@ with status 1 if any note could not be written. The default vault is
 `~/Cortex`; use `-vault DIR` to choose another folder for that run without
 saving it. Running it again only updates what changed. A paused Cortex does not
 sync.
+
+## Web chats
+
+ChatGPT, claude.ai and Gemini keep your conversations on their servers, not on
+your disk, so Cortex gets them in two other ways. Both write the same notes as
+every other source (`Chats/chatgpt/`, `Chats/claude-ai/`, `Chats/gemini/`), and
+a conversation that arrives both ways is one note, because the note is found
+by the conversation's id. A web note is dated when Cortex first received it if
+the conversation carries no times (the extension cannot see them), and has a
+`url:` line in its frontmatter when the extension sent one.
+
+### Import an export
+
+ChatGPT: Settings, Data controls, Export data. Claude: Settings, Privacy,
+Export data. You get an email with a zip. An export is a snapshot of that day:
+import a newer one later to bring conversations up to date (those that
+changed are updated, the rest are left as they are). Gemini has no export that
+Cortex reads.
+
+```
+cortex import FILE [-vault DIR] [-config FILE]
+```
+
+`FILE` is the zip as downloaded or the `conversations.json` inside it. It
+prints `N conversations: a created, b updated, c unchanged, d failed, e could
+not be read` and exits with status 1 if any conversation could not be written
+or the file is not a ChatGPT or Claude export. Conversations in the file that
+could not be decoded are counted in `e`, and the others are saved. The same is
+available in the panel's "Web chats" section ("Import an export": choose the
+file and press Import; files up to 2 GiB, one import at a time).
+
+An import is something you ask for by hand, so it ignores Pause and the
+source switches: a paused Cortex, or one with ChatGPT turned off, still saves
+what you import. Importing the same file twice changes nothing.
+
+### Browser extension
+
+The `extension/` folder of this repository (and of a release) is a Chrome, Edge
+and Brave extension that sends the ChatGPT, Claude or Gemini conversation open
+in a tab to Cortex while you chat. It is not in any browser store yet: load it
+unpacked (`chrome://extensions`, Developer mode, Load unpacked, choose the
+folder). See `extension/README.md` for what it reads and sends.
+
+It talks to the running `cortex run` on `127.0.0.1`, and proves itself with a
+pairing code. The first `cortex run` creates the code and saves it in the config
+file as `extension_token`; the panel's "Web chats" section shows it with a Copy
+button, the port, and a Regenerate button (the old code stops working at once).
+Paste the code and the port into the extension's options and press Test
+connection. Until a code exists the extension's routes answer 403 to everybody.
+
+The code is the only thing the extension needs: the panel's own token is not
+involved. Requests that carry an `Origin` other than an extension's are refused
+and no CORS headers are sent, so a web page cannot post conversations even if
+it learned the code. Unlike an import, the extension respects Pause and the
+source switches: while paused, or with a web source off, Cortex answers
+`skipped` and writes nothing.
 
 ## Let AI tools read the vault
 
@@ -267,7 +327,8 @@ directory:
   "disabled_sources": ["claude-code"],
   "excluded_projects": ["secret-client"],
   "redact_patterns": ["ACME-[0-9]{8}"],
-  "paused": false
+  "paused": false,
+  "extension_token": "..."
 }
 ```
 
@@ -278,12 +339,16 @@ directory:
 - `redact_patterns`: extra regular expressions to redact, on top of the
   built-in ones.
 - `paused`: capture nothing until set back to `false`.
+- `extension_token`: the browser extension's pairing code. `run` creates it when
+  it is missing; the panel can replace it. Treat it like a password: whoever
+  has it, and can reach `127.0.0.1` from a browser extension or a program, can
+  add notes to your vault.
 
 The panel writes this file when you change a setting, starting from what is in
 the file at that moment, so edits made by hand while Cortex is running are kept
 (unless the file no longer parses, in which case the panel's in-memory settings
 are written over it). They take effect the next time Cortex starts, or at the
-next change made in the panel. `-config FILE` on `run` and `sync` uses a
+next change made in the panel. `-config FILE` on `run`, `sync` and `import` uses a
 different file. `run` also keeps its log, `cortex.log`, in the same folder.
 
 ## License

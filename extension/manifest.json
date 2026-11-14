@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Cortex Saver",
+  "version": "0.1.0",
+  "description": "Saves the ChatGPT, Claude or Gemini conversation you have open to Cortex, running on this computer. Talks only to 127.0.0.1.",
+  "minimum_chrome_version": "110",
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*", "https://claude.ai/*", "https://gemini.google.com/*"],
+      "js": ["lib/settings.js", "lib/util.js", "lib/md.js", "content/sites/chatgpt.js", "content/sites/claude.js", "content/sites/gemini.js", "content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Cortex",
+    "default_popup": "popup/popup.html",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" }
+  },
+  "options_ui": { "page": "options/options.html", "open_in_tab": true },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  }
+}

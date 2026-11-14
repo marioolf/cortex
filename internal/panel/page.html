@@ -76,6 +76,13 @@ details.card > summary { padding: 10px 14px; cursor: pointer; }
 .status { color: var(--muted); font-size: 0.9rem; }
 .pickrow { flex-wrap: wrap; }
 #connect-msg { min-height: 1.4em; }
+.box { padding: 4px 14px 14px; }
+.box + .box { margin-top: 12px; }
+h3 { margin: 14px 0 4px; font-size: 0.95rem; }
+.box label.lbl { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 0.92rem; }
+input[type=file] { font: inherit; color: var(--text); flex: 1 1 14em; min-width: 0; max-width: 100%; }
+ol.steps { margin: 6px 0; padding-left: 1.3em; }
+#import-msg { min-height: 1.4em; overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .track, .track::after { transition: none; } }
 </style>
 </head>
@@ -116,6 +123,37 @@ details.card > summary { padding: 10px 14px; cursor: pointer; }
     </label>
   </div>
 
+  <h2>Web chats</h2>
+  <p class="muted">ChatGPT, Claude and Gemini in the browser keep your conversations on their servers. Cortex can save them from an export file or, while you chat, through a browser extension. Both end up in the vault like any other source and can be switched off under Sources.</p>
+  <div class="card box">
+    <h3>Import an export</h3>
+    <p class="muted">Choose the file you downloaded: the .zip as it is, or the conversations.json inside it. ChatGPT: Settings, Data controls, Export data. Claude: Settings, Privacy, Export data. An export is a one-off snapshot of that day; import a newer one later to bring a conversation up to date. An import is something you ask for, so it ignores Pause and the source switches.</p>
+    <div class="field">
+      <input id="import-file" type="file" accept=".zip,.json,application/zip,application/json" aria-label="Export file (.zip or .json)">
+      <button id="import-go" type="button">Import</button>
+    </div>
+    <p id="import-msg" class="muted" role="status" aria-live="polite"></p>
+  </div>
+  <div class="card box">
+    <h3>Browser extension</h3>
+    <p class="muted">Saves the ChatGPT, Claude or Gemini conversation you have open in Chrome, Edge or Brave to this Cortex while you chat. It sends nothing anywhere else.</p>
+    <label class="lbl" for="ext-code">Pairing code</label>
+    <div class="field">
+      <input id="ext-code" type="text" readonly spellcheck="false" autocomplete="off">
+      <button id="ext-copy" type="button">Copy</button>
+      <button id="ext-regen" type="button">Regenerate</button>
+    </div>
+    <p class="muted" id="ext-port"></p>
+    <p class="muted">To set it up:</p>
+    <ol class="steps muted">
+      <li>Find the extension folder in the Cortex repository or release (not in any browser store yet).</li>
+      <li>Open chrome://extensions (edge://extensions in Edge), turn on Developer mode, press Load unpacked and choose that folder.</li>
+      <li>Open the extension's options, paste the pairing code and the port above, and press Test connection.</li>
+    </ol>
+    <p class="muted">Regenerate replaces the code; the extension stops working until you paste the new one.</p>
+    <p id="ext-msg" class="muted" role="status" aria-live="polite"></p>
+  </div>
+
   <h2>Connect your AI tools</h2>
   <p class="muted">Cortex can let AI tools search and read your notes through an MCP server. The tool starts it when needed; Cortex does not have to be running, and nothing is written to your notes.</p>
   <p id="connect-msg" class="muted" role="status" aria-live="polite"></p>
@@ -134,6 +172,9 @@ const SOURCE_NAMES = {
   "codex": "Codex CLI",
   "opencode": "OpenCode",
   "cursor": "Cursor",
+  "chatgpt": "ChatGPT (web)",
+  "claude-ai": "Claude (web)",
+  "gemini": "Gemini (web)",
 };
 const $ = (id) => document.getElementById(id);
 let state = null;
@@ -206,6 +247,11 @@ function setRow(li, nameText, metaText, checked) {
   sw.firstChild.checked = checked;
 }
 
+function sourceMeta(x) {
+  if (x.kind === "web" && x.sessions === 0) return "no sessions yet: needs the browser extension or an import";
+  return (x.detected ? "" : "not found on this computer, ") + plural(x.sessions, "session", "sessions");
+}
+
 function render(s) {
   state = s;
   document.title = s.paused ? "Cortex (paused)" : "Cortex";
@@ -230,8 +276,7 @@ function render(s) {
 
   const src = $("sources");
   syncRows(src, s.sources, (x) => x.id, (x) => switchRow((li, on) => change({ source: { id: li.dataset.key, enabled: on } })),
-    (li, x) => setRow(li, SOURCE_NAMES[x.id] || x.id,
-      (x.detected ? "" : "not found on this computer, ") + plural(x.sessions, "session", "sessions"), x.enabled));
+    (li, x) => setRow(li, SOURCE_NAMES[x.id] || x.id, sourceMeta(x), x.enabled));
 
   const prj = $("projects");
   syncRows(prj, s.projects, (x) => x.name, (x) => switchRow((li, on) => change({ project: { name: li.dataset.key, excluded: !on } })),
@@ -253,6 +298,8 @@ function render(s) {
   chats.firstChild.children[1].textContent = plural(s.chats, "session", "sessions");
 
   $("autostart").checked = s.autostart;
+  $("ext-code").value = s.extension.code || "";
+  $("ext-port").textContent = "Port: " + s.extension.port + (s.extension.code ? "" : " (no pairing code yet; restart Cortex)");
   renderConnect(s);
 }
 
@@ -405,6 +452,53 @@ function renderConnect(s) {
   for (const d of root.querySelectorAll("details")) if (open.has(d.firstChild.textContent)) d.open = true;
   if (focused) { const f = root.querySelector('[data-focus="' + CSS.escape(focused) + '"]'); if (f) f.focus(); }
 }
+
+// ---- Web chats ----
+function importType(name) {
+  name = name.toLowerCase();
+  if (name.endsWith(".zip")) return "application/zip";
+  return name.endsWith(".json") ? "application/json" : "application/octet-stream";
+}
+
+$("import-go").addEventListener("click", async () => {
+  const file = $("import-file").files[0];
+  const msg = $("import-msg"), btn = $("import-go");
+  if (!file) { msg.textContent = "Choose a file first."; return; }
+  btn.disabled = true;
+  msg.textContent = "Working... a large export can take a few minutes. Keep this page open.";
+  try {
+    // The file itself is the body, so the browser streams it from disk.
+    const res = await fetch("/api/import", {
+      method: "POST", body: file,
+      headers: { "X-Cortex-Token": token, "Content-Type": importType(file.name) },
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || "Request failed (" + res.status + ")");
+    msg.textContent = d.conversations + " conversations: " + d.created + " created, " + d.updated + " updated, " + d.unchanged +
+      " unchanged, " + d.failed + " failed, " + d.unreadable + " could not be read." + (d.warning ? " " + d.warning : "");
+    load();
+  } catch (e) { msg.textContent = e.message; }
+  finally { btn.disabled = false; }
+});
+
+$("ext-copy").addEventListener("click", async () => {
+  const input = $("ext-code");
+  try {
+    await navigator.clipboard.writeText(input.value);
+    $("ext-msg").textContent = "Pairing code copied.";
+  } catch (e) {
+    input.select();
+    $("ext-msg").textContent = "Cannot reach the clipboard from here. The code is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.";
+  }
+});
+
+$("ext-regen").addEventListener("click", async () => {
+  if (!confirm("Replace the pairing code? The extension stops working until you paste the new code into its options.")) return;
+  try {
+    render(await call("/api/ext/regenerate", {}));
+    $("ext-msg").textContent = "New pairing code created. Paste it into the extension's options.";
+  } catch (e) { $("ext-msg").textContent = e.message; }
+});
 
 $("pause").addEventListener("click", () => change({ paused: !state.paused }));
 $("autostart").addEventListener("change", (e) => change({ autostart: e.target.checked }));

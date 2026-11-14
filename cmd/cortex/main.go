@@ -3,11 +3,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -39,6 +39,9 @@ const usage = `Usage:
                              (the default when no command is given)
   cortex sync [-vault DIR] [-config FILE]
                              save all conversations found on this machine once
+  cortex import FILE [-vault DIR] [-config FILE]
+                             save the conversations of a ChatGPT or claude.ai export
+                             (the zip as downloaded, or its conversations.json)
   cortex mcp [-vault DIR] [-config FILE]
                              serve the vault to AI tools over MCP on stdin/stdout
   cortex version
@@ -60,6 +63,8 @@ func main() {
 		err = run(args)
 	case "sync":
 		err = syncOnce(args)
+	case "import":
+		err = importExport(args, os.Stdout, os.Stderr)
 	case "mcp":
 		err = serveMCP(args)
 	case "version":
@@ -120,6 +125,54 @@ func syncOnce(args []string) error {
 	fmt.Println()
 	if st.Failed > 0 {
 		return fmt.Errorf("%d failed", st.Failed) // scripts must be able to tell
+	}
+	return nil
+}
+
+// importExport saves the conversations of an export file. The user chose the
+// file, so pause and source switches do not apply (see engine.Ingest).
+func importExport(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	vaultDir := fs.String("vault", "", "vault directory for this run (default: the configured one, or ~/Cortex)")
+	configPath := fs.String("config", "", "config file (default: the one in the OS config directory)")
+	// The file comes first in the usage line, and flag stops at the first non-flag.
+	var file string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		file, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if file == "" && fs.NArg() == 1 {
+		file = fs.Arg(0)
+	} else if file == "" || fs.NArg() > 0 {
+		return errors.New("usage: cortex import FILE [-vault DIR] [-config FILE]")
+	}
+
+	e, err := newEngine(*configPath)
+	if err != nil {
+		return err
+	}
+	if *vaultDir != "" {
+		if err := e.OverrideVault(*vaultDir); err != nil {
+			return err
+		}
+	}
+	sum, err := e.Import(file)
+	for _, msg := range sum.Errors {
+		fmt.Fprintln(stderr, "cortex: failed:", msg)
+	}
+	if err != nil && sum.Conversations == 0 {
+		return err
+	}
+	fmt.Fprintf(stdout, "%d conversations: %d created, %d updated, %d unchanged, %d failed, %d could not be read\n",
+		sum.Conversations, sum.Created, sum.Updated, sum.Unchanged, sum.Failed, sum.Unreadable)
+	if err != nil {
+		return err // the file broke part way: what was read is saved, but scripts must be able to tell
+	}
+	if sum.Failed > 0 {
+		return fmt.Errorf("%d failed", sum.Failed)
 	}
 	return nil
 }
@@ -212,11 +265,20 @@ func run(args []string) error {
 		return err
 	}
 	log.Printf("Cortex %s, vault %s", version, e.Snapshot().Vault)
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	if e.ExtensionToken() == "" {
+		// The browser extension's API stays closed until a pairing code exists.
+		code, err := config.NewToken()
+		if err != nil {
+			return err
+		}
+		if err := e.Update(func(c *config.Config) { c.ExtensionToken = code }); err != nil {
+			return err
+		}
+	}
+	token, err := config.NewToken()
+	if err != nil {
 		return err
 	}
-	token := hex.EncodeToString(raw[:])
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

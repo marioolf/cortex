@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marioolf/cortex/internal/session"
+	"github.com/marioolf/cortex/internal/vault"
 )
 
 // note writes an invented Cortex note under root and returns its relative path.
@@ -492,5 +495,35 @@ func TestSearchManyNotes(t *testing.T) {
 		if d := time.Since(t0); d > 2*time.Second {
 			t.Errorf("round %d took %v", round, d)
 		}
+	}
+}
+
+// Notes of web sessions carry a url line that the others do not; search and
+// read must not care.
+func TestNoteWithURLLine(t *testing.T) {
+	root := t.TempDir()
+	v, err := vault.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.Write(&session.Session{
+		Source: "claude-ai", ID: "web-uuid-1", Title: "Orchard pruning", URL: "https://claude.ai/chat/web-uuid-1",
+		Messages: []session.Message{{Role: "user", Text: "When do I prune the quince tree?"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := start(t, root)
+	text, isErr := c.tool("search", `{"query":"quince","source":"claude-ai"}`)
+	if isErr || !strings.Contains(text, "title: Orchard pruning") || !strings.Contains(text, "source: claude-ai") {
+		t.Fatalf("search: %v\n%s", isErr, text)
+	}
+	p := paths(text)
+	if len(p) != 1 {
+		t.Fatalf("paths = %v", p)
+	}
+	body, isErr := c.tool("read", `{"note":"`+p[0]+`"}`)
+	if isErr || !strings.Contains(body, "quince tree") {
+		t.Errorf("read: %v\n%s", isErr, body)
 	}
 }

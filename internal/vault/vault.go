@@ -60,14 +60,16 @@ const (
 type Vault struct {
 	Root  string
 	Loc   *time.Location    // time zone for dates shown in notes
+	Now   func() time.Time  // dates a note whose session has no timestamp at all
 	index map[string]string // session ID -> note path
+	src   map[string]string // session ID -> source, as written in the note
 }
 
 func Open(root string) (*Vault, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	v := &Vault{Root: root, Loc: time.Local, index: map[string]string{}}
+	v := &Vault{Root: root, Loc: time.Local, Now: time.Now}
 	if p := filepath.Join(root, "README.md"); !exists(p) {
 		if err := os.WriteFile(p, []byte(readme), 0o644); err != nil {
 			return nil, err
@@ -79,6 +81,7 @@ func Open(root string) (*Vault, error) {
 // Reindex rebuilds the session-to-note index from the files on disk.
 func (v *Vault) Reindex() error {
 	v.index = map[string]string{}
+	v.src = map[string]string{}
 	root := v.Root
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -87,35 +90,56 @@ func (v *Vault) Reindex() error {
 		// Hidden folders are walked too: a note moved to .archive or deleted
 		// into Obsidian's .trash is still the note for its session.
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".md") {
-			if id := sessionID(path); id != "" {
+			if id, source := noteHead(path); id != "" {
 				v.index[id] = path
+				v.src[id] = source
 			}
 		}
 		return nil
 	})
 }
 
-var sessionLine = regexp.MustCompile(`(?m)^session: (".*")\r?$`)
+var (
+	sessionLine = regexp.MustCompile(`(?m)^session: (".*")\r?$`)
+	sourceLine  = regexp.MustCompile(`(?m)^source: (".*")\r?$`)
+)
 
-// sessionID reads the session ID from a note's frontmatter, or "" if it has none.
-func sessionID(path string) string {
+// SourceCounts returns how many notes each source has, as read from the
+// frontmatter. Web sources are counted from here because nothing collects
+// them again after a restart.
+func (v *Vault) SourceCounts() map[string]int {
+	out := map[string]int{}
+	for _, s := range v.src {
+		if s != "" {
+			out[s]++
+		}
+	}
+	return out
+}
+
+// noteHead reads the session ID and the source from a note's frontmatter; the
+// ID is "" if the file has none.
+func noteHead(path string) (id, source string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
 	head := make([]byte, 2048)
 	n, _ := io.ReadFull(f, head)
 	head = head[:n]
 	if !bytes.HasPrefix(head, []byte("---")) {
-		return ""
+		return "", ""
 	}
 	m := sessionLine.FindSubmatch(head)
 	if m == nil {
-		return ""
+		return "", ""
 	}
-	id, _ := strconv.Unquote(string(m[1]))
-	return id
+	id, _ = strconv.Unquote(string(m[1]))
+	if m := sourceLine.FindSubmatch(head); m != nil {
+		source, _ = strconv.Unquote(string(m[1]))
+	}
+	return id, source
 }
 
 // Write creates the note for s, or refreshes the generated block of the
@@ -156,10 +180,13 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err
 	}
-	date := "undated"
-	if t := s.Started(); !t.IsZero() {
-		date = t.In(v.Loc).Format("2006-01-02")
+	// The browser extension cannot see message times: such a note is dated
+	// when we first saw it. Later writes only touch the block, so this stays put.
+	started := s.Started()
+	if started.IsZero() {
+		started = v.Now()
 	}
+	date := started.In(v.Loc).Format("2006-01-02")
 	// The short ID keeps names unique; fall back to the full one on a clash.
 	// The title gets what is left of the budget when the longer ID is used, so
 	// both variants fit.
@@ -184,9 +211,10 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 	if s.Cwd != "" {
 		fmt.Fprintf(&b, "cwd: %s\n", strconv.Quote(s.Cwd))
 	}
-	if t := s.Started(); !t.IsZero() {
-		fmt.Fprintf(&b, "started: %s\n", t.UTC().Format(time.RFC3339))
+	if s.URL != "" {
+		fmt.Fprintf(&b, "url: %s\n", strconv.Quote(s.URL))
 	}
+	fmt.Fprintf(&b, "started: %s\n", started.UTC().Format(time.RFC3339))
 	b.WriteString("generated: true\n---\n\n")
 	fmt.Fprintf(&b, "# %s\n\n%s\n", title, block)
 
@@ -194,6 +222,7 @@ func (v *Vault) Write(s *session.Session) (Result, error) {
 		return 0, err
 	}
 	v.index[s.ID] = path
+	v.src[s.ID] = s.Source
 	return Created, nil
 }
 

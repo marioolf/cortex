@@ -2,6 +2,7 @@ package panel
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,13 +35,26 @@ type env struct {
 	clients   map[string]string // config file of each client, in a temp dir
 	autostart bool
 	opened    []string
+	vault     string // the vault folder
+	tmp       string // where uploads are spooled
+	eng       *engine.Engine
 }
 
-func setup(t *testing.T) *env {
+const pairing = "pair-code-0123456789abcdef"
+
+func setup(t *testing.T) *env { return setupWith(t, nil, nil) }
+
+// setupWith lets a test change the config before the engine reads it, and the
+// panel's options before it is built.
+func setupWith(t *testing.T, cfgFn func(*config.Config), optFn func(*Options)) *env {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-	if err := (&config.Config{Vault: filepath.Join(dir, "vault")}).Save(cfgPath); err != nil {
+	cfg := &config.Config{Vault: filepath.Join(dir, "vault"), ExtensionToken: pairing}
+	if cfgFn != nil {
+		cfgFn(cfg)
+	}
+	if err := cfg.Save(cfgPath); err != nil {
 		t.Fatal(err)
 	}
 	e, err := engine.New(cfgPath, []collector.Collector{fakeSource{}})
@@ -48,12 +62,14 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e.Sync()
-	en := &env{cfgPath: cfgPath, clients: map[string]string{
+	en := &env{cfgPath: cfgPath, eng: e, vault: cfg.Vault, tmp: filepath.Join(dir, "tmp"), clients: map[string]string{
 		"claude-desktop": filepath.Join(dir, "Claude", "claude_desktop_config.json"),
 		"cursor":         filepath.Join(dir, ".cursor", "mcp.json"),
 	}}
-	en.h = New(e, tok, Options{
+	os.MkdirAll(en.tmp, 0o700)
+	opt := Options{
 		Port:             47999,
+		TempDir:          en.tmp,
 		Exe:              func() (string, error) { return `C:\Apps\Cortex\cortex.exe`, nil },
 		ClientPaths:      en.clients,
 		GOOS:             "windows",
@@ -61,8 +77,23 @@ func setup(t *testing.T) *env {
 		AutostartEnabled: func() bool { return en.autostart },
 		SetAutostart:     func(on bool) error { en.autostart = on; return nil },
 		Open:             func(p string) error { en.opened = append(en.opened, p); return nil },
-	})
+	}
+	if optFn != nil {
+		optFn(&opt)
+	}
+	en.h = New(e, tok, opt)
 	return en
+}
+
+func (en *env) raw(method, path string, hdr map[string]string, body io.Reader) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, body)
+	r.Host = good
+	for k, v := range hdr {
+		r.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	en.h.ServeHTTP(w, r)
+	return w
 }
 
 func (en *env) do(method, path, host, token, ctype, body string) *httptest.ResponseRecorder {
@@ -442,5 +473,15 @@ func TestConnectGoesThroughTheGuard(t *testing.T) {
 	}
 	if _, err := os.Stat(en.clients["cursor"]); err == nil {
 		t.Error("a config file was written without passing the guard")
+	}
+}
+
+func TestPageHasTheWebChatsSection(t *testing.T) {
+	body := setup(t).do("GET", "/", good, "", "", "").Body.String()
+	for _, want := range []string{"Web chats", "Import an export", "Browser extension", "ChatGPT (web)", "Claude (web)", "Gemini (web)",
+		"Data controls", "Settings, Privacy", "chrome://extensions", `id="ext-code"`, "readonly", "needs the browser extension or an import"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
 	}
 }

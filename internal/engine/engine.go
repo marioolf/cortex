@@ -29,8 +29,13 @@ type Stats struct {
 	Failed    int `json:"failed"`
 }
 
+// WebSources are fed by the browser extension or by imports, not read from
+// disk by a collector.
+var WebSources = []string{"chatgpt", "claude-ai", "gemini"}
+
 type SourceState struct {
 	ID       string `json:"id"`
+	Kind     string `json:"kind"` // "local" for collectors, "web" for WebSources
 	Detected bool   `json:"detected"`
 	Enabled  bool   `json:"enabled"`
 	Sessions int    `json:"sessions"`
@@ -76,6 +81,7 @@ type Engine struct {
 	lastSync  time.Time
 	lastStats Stats
 	errs      []string
+	counts    map[string]int // notes per source in the vault, refreshed whenever it changes
 
 	// Sessions whose note could not be written, already redacted, retried at
 	// the start of every round. The collectors consider them read, so without
@@ -131,6 +137,7 @@ func (e *Engine) OverrideVault(dir string) error {
 	cfg := clone(e.cfg)
 	cfg.Vault = dir
 	e.cfg, e.v = cfg, v
+	e.counts = v.SourceCounts()
 	return nil
 }
 
@@ -143,8 +150,21 @@ func (e *Engine) vault(cfg *config.Config) (*vault.Vault, error) {
 			return nil, err
 		}
 		e.v = v
+		e.refreshCounts()
 	}
 	return e.v, nil
+}
+
+// refreshCounts caches the vault's per-source note counts for Snapshot. Call
+// it only while holding run.
+func (e *Engine) refreshCounts() {
+	var c map[string]int
+	if e.v != nil {
+		c = e.v.SourceCounts()
+	}
+	e.mu.Lock()
+	e.counts = c
+	e.mu.Unlock()
 }
 
 func (e *Engine) detect() {
@@ -167,6 +187,11 @@ func (e *Engine) Sync() Stats {
 	cfg, red := e.cfg, e.red // Update swaps these; it never edits them in place
 	e.mu.Unlock()
 	if cfg.Paused {
+		// The panel still shows the web sources' counts: open an existing vault
+		// for them, but do not create one just to look.
+		if _, err := os.Stat(cfg.Vault); err == nil {
+			e.vault(cfg)
+		}
 		return Stats{}
 	}
 
@@ -291,6 +316,7 @@ func (e *Engine) Update(f func(*config.Config)) error {
 	e.mu.Lock()
 	e.cfg, e.red = cfg, red
 	e.mu.Unlock()
+	e.refreshCounts()
 	return nil
 }
 
@@ -352,7 +378,10 @@ func (e *Engine) Snapshot() State {
 	}
 	for _, c := range e.cols {
 		id := c.ID()
-		s.Sources = append(s.Sources, SourceState{id, e.detected[id], e.cfg.SourceEnabled(id), perSource[id]})
+		s.Sources = append(s.Sources, SourceState{id, "local", e.detected[id], e.cfg.SourceEnabled(id), perSource[id]})
+	}
+	for _, id := range WebSources {
+		s.Sources = append(s.Sources, SourceState{id, "web", true, e.cfg.SourceEnabled(id), e.counts[id]})
 	}
 	// Excluded projects stay listed even with no sessions seen, so they can be turned back on.
 	for _, name := range e.cfg.ExcludedProjects {
@@ -365,4 +394,12 @@ func (e *Engine) Snapshot() State {
 	}
 	sort.Slice(s.Projects, func(i, j int) bool { return s.Projects[i].Name < s.Projects[j].Name })
 	return s
+}
+
+// ExtensionToken is the current pairing code of the browser extension, empty
+// while none exists.
+func (e *Engine) ExtensionToken() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.ExtensionToken
 }

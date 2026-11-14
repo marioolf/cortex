@@ -90,7 +90,7 @@ func TestSyncWritesAndRedacts(t *testing.T) {
 		t.Errorf("second round = %+v", st)
 	}
 	s := e.Snapshot()
-	if s.LastSync == "" || s.Chats != 1 || len(s.Sources) != 1 || s.Sources[0].Sessions != 2 || !s.Sources[0].Detected {
+	if s.LastSync == "" || s.Chats != 1 || len(s.Sources) != 1+len(WebSources) || s.Sources[0].Sessions != 2 || !s.Sources[0].Detected || s.Sources[0].Kind != "local" {
 		t.Errorf("snapshot = %+v", s)
 	}
 }

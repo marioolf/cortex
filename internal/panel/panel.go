@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marioolf/cortex/internal/autostart"
@@ -48,6 +49,10 @@ type Options struct {
 	ClientPaths  map[string]string      // config file of each client (see connect.Paths); nil means the real ones
 	GOOS         string                 // OS to build the command lines for; empty means runtime.GOOS
 	WSLAvailable func() bool            // whether WSL distros exist; nil asks wsl.exe
+
+	// For importing exports.
+	MaxImport int64  // largest upload in bytes; 0 means 2 GiB
+	TempDir   string // where uploads are spooled; empty means the OS temp directory
 }
 
 // Header marks every response as coming from Cortex, so that a second instance
@@ -63,7 +68,8 @@ type panel struct {
 	token string
 	opt   Options
 
-	connectMu sync.Mutex // one edit of a client's config file at a time
+	connectMu sync.Mutex  // one edit of a client's config file at a time
+	importing atomic.Bool // one import at a time
 
 	mu        sync.Mutex
 	autostart bool
@@ -101,6 +107,9 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	if opt.WSLAvailable == nil {
 		opt.WSLAvailable = func() bool { return len(wsl.Roots()) > 0 }
 	}
+	if opt.MaxImport <= 0 {
+		opt.MaxImport = defaultMaxImport
+	}
 	p := &panel{e: e, token: token, opt: opt}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.page)
@@ -108,6 +117,10 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	mux.HandleFunc("POST /api/config", p.config)
 	mux.HandleFunc("POST /api/open-vault", p.openVault)
 	mux.HandleFunc("POST /api/connect", p.connect)
+	mux.HandleFunc("POST /api/import", p.importFile)
+	mux.HandleFunc("GET "+routePing, p.extPing)
+	mux.HandleFunc("POST "+routeIngest, p.extIngest)
+	mux.HandleFunc("POST "+routeRegenerate, p.extRegenerate)
 	mux.HandleFunc("POST /api/quit", p.quit)
 	return p.guard(mux)
 }
@@ -128,22 +141,52 @@ func (p *panel) guard(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		switch {
+		case isExtRoute(r.URL.Path):
+			// The pairing code, not the panel token: see ext.go.
+			if !p.extAllowed(r) {
+				jsonError(w, "forbidden", http.StatusForbidden)
+				return
+			}
+		case strings.HasPrefix(r.URL.Path, "/api/"):
 			got := r.Header.Get("X-Cortex-Token")
 			if subtle.ConstantTimeCompare([]byte(got), []byte(p.token)) != 1 {
 				jsonError(w, "forbidden", http.StatusForbidden)
 				return
 			}
 		}
-		if r.Method == http.MethodPost {
-			if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-				jsonError(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
-				return
-			}
-			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+		if r.Method == http.MethodPost && !limitPost(w, r) {
+			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// limitPost checks the Content-Type of a POST and caps its body. Everything is
+// JSON and small, except an uploaded export (any of the types a browser may
+// give a zip or json file, with the handler's own cap) and the extension's
+// conversations (5 MB). It reports whether the request may go on.
+func limitPost(w http.ResponseWriter, r *http.Request) bool {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	max, ok := int64(maxBody), mt == "application/json"
+	switch r.URL.Path {
+	case "/api/import":
+		max, ok = -1, ok || mt == "application/zip" || mt == "application/octet-stream"
+	case routeIngest:
+		max = maxIngest
+	}
+	if err != nil || !ok {
+		msg := "Content-Type must be application/json"
+		if r.URL.Path == "/api/import" {
+			msg = "Content-Type must be application/zip, application/json or application/octet-stream"
+		}
+		jsonError(w, msg, http.StatusUnsupportedMediaType)
+		return false
+	}
+	if max > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, max)
+	}
+	return true
 }
 
 func (p *panel) page(w http.ResponseWriter, r *http.Request) {
@@ -160,7 +203,15 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 // connect AI tools.
 type stateJSON struct {
 	engine.State
-	MCP mcpState `json:"mcp"`
+	MCP       mcpState `json:"mcp"`
+	Extension extState `json:"extension"`
+}
+
+// extState is what the page shows to pair the browser extension. The code is
+// safe to show here: the state is behind the panel token and local.
+type extState struct {
+	Code string `json:"code"`
+	Port int    `json:"port"`
 }
 
 type mcpState struct {
@@ -183,7 +234,7 @@ type clientState struct {
 func (p *panel) snapshot() stateJSON {
 	s := p.e.Snapshot()
 	s.Autostart = p.autostartEnabled(false)
-	return stateJSON{s, p.mcpState()}
+	return stateJSON{s, p.mcpState(), extState{p.e.ExtensionToken(), p.opt.Port}}
 }
 
 func (p *panel) mcpState() mcpState {

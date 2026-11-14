@@ -233,3 +233,54 @@ func TestNotesInHiddenFoldersAreFound(t *testing.T) {
 		write(t, open(t, root), s, Created)
 	}
 }
+
+func TestSessionWithoutTimestampsIsDatedWhenFirstSeen(t *testing.T) {
+	root := t.TempDir()
+	v := open(t, root)
+	now := time.Date(2026, 3, 4, 22, 30, 0, 0, time.UTC)
+	v.Now = func() time.Time { return now }
+	s := &session.Session{
+		Source: "chatgpt", ID: "web-1", Title: "Plants", URL: "https://chatgpt.com/c/web-1",
+		Messages: []session.Message{{Role: "user", Text: "hello"}, {Role: "assistant", Text: "hi"}},
+	}
+	write(t, v, s, Created)
+
+	path := filepath.Join(root, "Chats", "chatgpt", "2026-03-04 Plants (web-1).md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := string(data)
+	for _, want := range []string{"started: 2026-03-04T22:30:00Z\n", `url: "https://chatgpt.com/c/web-1"` + "\n", "## User\n\nhello", "## Assistant\n\nhi"} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note lacks %q:\n%s", want, note)
+		}
+	}
+
+	// A later round, on another day, changes nothing; a new message only touches the block.
+	v.Now = func() time.Time { return now.Add(48 * time.Hour) }
+	write(t, v, s, Unchanged)
+	s.Messages = append(s.Messages, session.Message{Role: "user", Text: "more"})
+	write(t, v, s, Updated)
+	after, _ := os.ReadFile(path)
+	if !strings.Contains(string(after), "started: 2026-03-04T22:30:00Z\n") || !strings.Contains(string(after), "more") {
+		t.Errorf("after update:\n%s", after)
+	}
+}
+
+func TestSourceCountsComeFromTheNotes(t *testing.T) {
+	root := t.TempDir()
+	v := open(t, root)
+	for _, s := range []*session.Session{
+		{Source: "gemini", ID: "g1", Title: "a", Messages: []session.Message{{Role: "user", Text: "x"}}},
+		{Source: "gemini", ID: "g2", Title: "b", Messages: []session.Message{{Role: "user", Text: "x"}}},
+		{Source: "chatgpt", ID: "c1", Title: "c", Messages: []session.Message{{Role: "user", Text: "x"}}},
+	} {
+		write(t, v, s, Created)
+	}
+	// A fresh Vault on the same folder, as after a restart.
+	got := open(t, root).SourceCounts()
+	if got["gemini"] != 2 || got["chatgpt"] != 1 || len(got) != 2 {
+		t.Errorf("counts = %v", got)
+	}
+}

@@ -3,6 +3,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -17,6 +19,18 @@ type Config struct {
 	ExcludedProjects []string `json:"excluded_projects"`
 	RedactPatterns   []string `json:"redact_patterns"`
 	Paused           bool     `json:"paused"`
+	// ExtensionToken is the pairing code of the browser extension. Empty means
+	// the extension API is closed; `cortex run` creates one on first start.
+	ExtensionToken string `json:"extension_token"`
+}
+
+// NewToken returns 32 random bytes as hex, for the pairing code.
+func NewToken() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
 }
 
 func Path() (string, error) {

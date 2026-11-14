@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortex Saver options</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<main>
+  <h1>Cortex Saver</h1>
+  <p class="lead">Saves the conversation you have open on ChatGPT, Claude or Gemini to Cortex, running on this computer. Nothing is sent anywhere else.</p>
+
+  <section>
+    <h2>Connection</h2>
+    <label for="code">Pairing code</label>
+    <p class="hint">Copy it from the Cortex panel (extension section).</p>
+    <div class="row">
+      <input id="code" type="password" autocomplete="off" spellcheck="false">
+      <button id="show" type="button">Show</button>
+    </div>
+    <label for="port">Port</label>
+    <input id="port" type="number" min="1" max="65535" value="47821">
+    <div class="row">
+      <button id="test" type="button">Test connection</button>
+      <span id="result" role="status"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sites</h2>
+    <label class="check"><input id="site-chatgpt" type="checkbox"> ChatGPT (chatgpt.com)</label>
+    <label class="check"><input id="site-claude" type="checkbox"> Claude (claude.ai)</label>
+    <label class="check"><input id="site-gemini" type="checkbox"> Gemini (gemini.google.com)</label>
+    <label class="check"><input id="paused" type="checkbox"> Pause everything</label>
+  </section>
+
+  <p id="saved" class="hint" role="status"></p>
+</main>
+<script src="../lib/settings.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

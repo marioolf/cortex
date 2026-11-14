@@ -24,6 +24,7 @@ type Session struct {
 	ID       string
 	Cwd      string
 	Title    string
+	URL      string // where the conversation lives on the web, if known; collectors leave it empty
 	Messages []Message
 }
 
