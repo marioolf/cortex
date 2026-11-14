@@ -1,0 +1,5 @@
+/cortex
+/cortex.exe
+/dist/
+*.test
+*.out
