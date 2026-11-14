@@ -131,6 +131,7 @@ func ParseFile(path string) (*session.Session, error) {
 // format is undocumented and gains new entry types with every release.
 func Parse(r io.Reader) (*session.Session, error) {
 	s := &session.Session{Source: ID}
+	var mg session.Merger
 	var aiTitle, customTitle string
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
@@ -144,7 +145,7 @@ func Parse(r io.Reader) (*session.Session, error) {
 				case "custom-title":
 					customTitle = e.CustomTitle
 				case "user", "assistant":
-					addMessage(s, &e)
+					addMessage(s, &mg, &e)
 				}
 			}
 		}
@@ -155,6 +156,7 @@ func Parse(r io.Reader) (*session.Session, error) {
 			return nil, err
 		}
 	}
+	s.Messages = mg.Messages()
 	switch {
 	case customTitle != "":
 		s.Title = customTitle
@@ -171,7 +173,7 @@ func Parse(r io.Reader) (*session.Session, error) {
 	return s, nil
 }
 
-func addMessage(s *session.Session, e *entry) {
+func addMessage(s *session.Session, mg *session.Merger, e *entry) {
 	if e.IsSidechain || e.IsMeta || e.IsCompactSummary || e.IsAPIErrorMessage {
 		return
 	}
@@ -194,11 +196,7 @@ func addMessage(s *session.Session, e *entry) {
 	}
 	ts, _ := time.Parse(time.RFC3339, e.Timestamp)
 	// One assistant turn is spread over several lines (one per content block).
-	if n := len(s.Messages); n > 0 && s.Messages[n-1].Role == e.Type {
-		s.Messages[n-1].Text += "\n\n" + text
-		return
-	}
-	s.Messages = append(s.Messages, session.Message{Role: e.Type, Text: text, Time: ts})
+	mg.Add(e.Type, text, ts)
 }
 
 // contentText keeps text and a one-line summary of each tool call. Tool

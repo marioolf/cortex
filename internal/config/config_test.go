@@ -124,8 +124,8 @@ func TestInvalidSummariesLoadAsOffWithAWarning(t *testing.T) {
 	// A file that is not JSON at all stays an error.
 	path := filepath.Join(t.TempDir(), "c.json")
 	os.WriteFile(path, []byte(`{not json`), 0o600)
-	if _, err := LoadFile(path); err == nil {
-		t.Error("garbage loaded")
+	if _, err := LoadFile(path); err == nil || !strings.Contains(err.Error(), path) {
+		t.Errorf("garbage loaded, or the error does not name the file: %v", err)
 	}
 }
 

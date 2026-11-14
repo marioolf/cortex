@@ -40,6 +40,9 @@ func (s *scanner) fill() error {
 
 func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
 
+// errNotArray means the file does not start with a JSON array.
+var errNotArray = errors.New("not a JSON array")
+
 var errTooMuchSpace = errors.New("too much whitespace between elements")
 
 // skipSpace consumes whitespace and returns the next byte without consuming
@@ -76,7 +79,7 @@ func (s *scanner) start(limit int64) error {
 				return err
 			}
 			if s.buf[s.pos] != want {
-				return errors.New("not a JSON array")
+				return errNotArray
 			}
 			s.pos++
 		}
@@ -86,11 +89,27 @@ func (s *scanner) start(limit int64) error {
 		return err
 	}
 	if c != '[' {
-		return errors.New("not a JSON array")
+		return errNotArray
 	}
 	s.pos++
 	return nil
 }
+
+// finish consumes the closing "]" that next reported as done and checks that
+// nothing but whitespace follows it. It returns errTrailing otherwise.
+func (s *scanner) finish(limit int64) error {
+	s.pos++
+	_, err := s.skipSpace(limit)
+	switch {
+	case err == io.EOF:
+		return nil
+	case err == nil:
+		return errTrailing
+	}
+	return err
+}
+
+var errTrailing = errors.New("unexpected data after the end of the export")
 
 // next returns the following element of the array. At the closing "]" it
 // returns done. An element longer than limit is not kept: tooBig is true, raw is

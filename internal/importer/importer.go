@@ -61,6 +61,9 @@ type Options struct {
 	MaxTotal   int64 // most bytes read from all the files of one export
 	// Skip is told why each unreadable conversation was skipped. May be nil.
 	Skip func(reason string)
+	// Clean is applied to a conversation title before it is put in a Skip
+	// reason (the engine redacts it there). May be nil.
+	Clean func(string) string
 }
 
 func (o Options) withDefaults() Options {
@@ -119,6 +122,7 @@ type run struct {
 	opt        Options
 	fn         func(*session.Session) error
 	unreadable int
+	inZip      bool                // the data comes from a zip entry
 	fnErr      error               // set when the callback failed
 	total      int64               // bytes read so far from all files
 	ids        map[string]struct{} // source + id of the conversations delivered
@@ -132,8 +136,9 @@ var convFile = regexp.MustCompile(`^conversations(-\d+)?\.json$`)
 func (r *run) zip(ra io.ReaderAt, size int64) error {
 	zr, err := zip.NewReader(ra, size)
 	if err != nil {
-		return fmt.Errorf("not a readable zip file: %w", err)
+		return fmt.Errorf("damaged zip file (it cannot be read as a zip): %w", err)
 	}
+	r.inZip = true
 	var files []*zip.File
 	for _, f := range zr.File {
 		if !f.FileInfo().IsDir() && convFile.MatchString(path.Base(strings.ReplaceAll(f.Name, `\`, "/"))) {
@@ -229,7 +234,14 @@ func (r *run) stream(rd io.Reader) error {
 		if errors.Is(err, errCap) || errors.Is(err, errTooMuchSpace) {
 			return err
 		}
-		return fmt.Errorf("%w (%v)", ErrUnsupported, err)
+		if errors.Is(err, errNotArray) || err == io.EOF {
+			return fmt.Errorf("%w (%v)", ErrUnsupported, err)
+		}
+		// Not about what the file holds but about reading it: a corrupt entry.
+		if r.inZip {
+			return fmt.Errorf("damaged zip file (an entry cannot be read): %w", err)
+		}
+		return fmt.Errorf("the file cannot be read: %w", err)
 	}
 	seen, recognized := 0, 0 // recognized: elements that look like a conversation of either format
 	for first := true; ; first = false {
@@ -285,7 +297,7 @@ func (r *run) stream(rd io.Reader) error {
 			continue
 		}
 		if strings.TrimSpace(s.ID) == "" {
-			r.skip(fmt.Sprintf("conversation %d (%q) skipped: it has no id", seen, firstLine(s.Title)))
+			r.skip(fmt.Sprintf("conversation %d (%q) skipped: it has no id", seen, r.shownTitle(s.Title)))
 			continue
 		}
 		key := s.Source + "\x00" + s.ID
@@ -302,7 +314,33 @@ func (r *run) stream(rd io.Reader) error {
 	if seen > 0 && recognized == 0 {
 		return ErrUnsupported
 	}
+	// The conversations above were valid and stay delivered; the rest of the
+	// file is not something we understand, so the import is incomplete.
+	if err := sc.finish(r.opt.MaxElement); err != nil {
+		if errors.Is(err, errTooMuchSpace) {
+			err = fmt.Errorf("more than %s of whitespace after the end of the export", size64(r.opt.MaxElement))
+		}
+		return fmt.Errorf("after %d conversation(s): %w", seen, err)
+	}
 	return nil
+}
+
+// maxShownTitle is the most characters of a title a skip message shows.
+const maxShownTitle = 80
+
+// shownTitle is the first line of a conversation title as it may appear in a
+// message: redacted (when the caller gave a Clean) and cut to maxShownTitle
+// characters. The cut after cleaning keeps a half-cut secret out of the text;
+// the earlier, wide one only bounds the work of the redactor.
+func (r *run) shownTitle(title string) string {
+	t := session.CapText(firstLine(title), 2000)
+	if r.opt.Clean != nil {
+		t = r.opt.Clean(t)
+	}
+	if rs := []rune(t); len(rs) > maxShownTitle {
+		t = string(rs[:maxShownTitle]) + "…"
+	}
+	return t
 }
 
 // --- helpers shared by both formats ---
@@ -322,17 +360,13 @@ func toolLine(name, detail string) string {
 
 // build merges consecutive same-role messages and fills in the title.
 func build(s *session.Session, title string, msgs []session.Message) *session.Session {
+	var mg session.Merger
 	for _, m := range msgs {
-		m.Text = strings.TrimSpace(m.Text)
-		if m.Text == "" {
-			continue
+		if text := strings.TrimSpace(m.Text); text != "" {
+			mg.Add(m.Role, text, m.Time)
 		}
-		if n := len(s.Messages); n > 0 && s.Messages[n-1].Role == m.Role {
-			s.Messages[n-1].Text += "\n\n" + m.Text
-			continue
-		}
-		s.Messages = append(s.Messages, m)
 	}
+	s.Messages = append(s.Messages, mg.Messages()...)
 	s.Title = strings.TrimSpace(title)
 	if s.Title == "" {
 		for _, m := range s.Messages {

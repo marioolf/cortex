@@ -461,7 +461,8 @@ func (e *Engine) SummarizeNote(path string) (string, error) {
 	}
 	out, err := e.generate(cfg.Summaries, text)
 	if err != nil {
-		return "", err
+		// The same single redacted line the panel shows, not the raw stderr.
+		return "", errors.New(e.failureText(err))
 	}
 	e.run.Lock()
 	defer e.run.Unlock()

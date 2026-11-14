@@ -168,7 +168,7 @@ func LoadFile(path string) (*Config, error) {
 			Summaries json.RawMessage `json:"summaries"`
 		}{}
 		if err := json.Unmarshal(data, &f); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s is not valid JSON: %w", path, err)
 		}
 		*c = Config(f.plain)
 		c.Summaries = Summaries{}

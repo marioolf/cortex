@@ -190,7 +190,7 @@ func Parse(r io.Reader) (*session.Session, error) {
 	s := &session.Session{Source: ID}
 	// Typed messages are logged twice in newer rollouts (raw response item and
 	// UI event), so each source is collected apart and only one is used.
-	var raw, events []session.Message
+	var raw, events session.Merger
 	var metaTime time.Time
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
@@ -241,9 +241,9 @@ func Parse(r io.Reader) (*session.Session, error) {
 			return nil, err
 		}
 	}
-	s.Messages = raw
-	if !hasUser(raw) && hasUser(events) {
-		s.Messages = events
+	s.Messages = raw.Messages()
+	if !hasUser(s.Messages) && hasUser(events.Messages()) {
+		s.Messages = events.Messages()
 	}
 	if len(s.Messages) > 0 && s.Messages[0].Time.IsZero() {
 		s.Messages[0].Time = metaTime
@@ -273,7 +273,7 @@ func str(raw json.RawMessage) string {
 	return s
 }
 
-func addItem(s *session.Session, dst *[]session.Message, it *rec, ts time.Time) {
+func addItem(s *session.Session, dst *session.Merger, it *rec, ts time.Time) {
 	switch it.Type {
 	case "message":
 		role := it.Role
@@ -297,7 +297,7 @@ func addItem(s *session.Session, dst *[]session.Message, it *rec, ts time.Time) 
 
 // addEvent handles the UI-facing copies of messages, used only when a rollout
 // has no raw user messages.
-func addEvent(dst *[]session.Message, ev *rec, ts time.Time) {
+func addEvent(dst *session.Merger, ev *rec, ts time.Time) {
 	switch ev.Type {
 	case "user_message":
 		add(dst, "user", cleanUser(nil, str(ev.Message)), ts)
@@ -316,17 +316,13 @@ func addEvent(dst *[]session.Message, ev *rec, ts time.Time) {
 	}
 }
 
-func add(dst *[]session.Message, role, text string, ts time.Time) {
+func add(dst *session.Merger, role, text string, ts time.Time) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return
 	}
 	// A turn is spread over several items (text, tool calls, more text).
-	if n := len(*dst); n > 0 && (*dst)[n-1].Role == role {
-		(*dst)[n-1].Text += "\n\n" + text
-		return
-	}
-	*dst = append(*dst, session.Message{Role: role, Text: text, Time: ts})
+	dst.Add(role, text, ts)
 }
 
 // contentText joins the text parts: input_text/output_text in response items,

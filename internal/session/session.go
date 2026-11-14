@@ -145,3 +145,40 @@ func CapText(text string, max int) string {
 	}
 	return text
 }
+
+// Merger builds a message list in which consecutive messages of one role are
+// one message, their texts joined by a blank line. Appending to a string each
+// time would copy the whole text on every piece (quadratic: a session of
+// hundreds of thousands of pieces took minutes), so the pieces of the last
+// message are kept apart and joined once. The zero value is ready to use.
+type Merger struct {
+	msgs  []Message
+	parts []string // pieces of the last message, when it has more than one
+}
+
+// Add appends a message, or joins text to the last one when it has the same
+// role (the first message's time is kept). text must not be empty.
+func (g *Merger) Add(role, text string, ts time.Time) {
+	if n := len(g.msgs); n > 0 && g.msgs[n-1].Role == role {
+		if len(g.parts) == 0 {
+			g.parts = append(g.parts, g.msgs[n-1].Text)
+		}
+		g.parts = append(g.parts, text)
+		return
+	}
+	g.flush()
+	g.msgs = append(g.msgs, Message{Role: role, Text: text, Time: ts})
+}
+
+func (g *Merger) flush() {
+	if len(g.parts) > 0 {
+		g.msgs[len(g.msgs)-1].Text = strings.Join(g.parts, "\n\n")
+		g.parts = nil
+	}
+}
+
+// Messages returns the merged messages so far. Adding more afterwards is fine.
+func (g *Merger) Messages() []Message {
+	g.flush()
+	return g.msgs
+}

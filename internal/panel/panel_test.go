@@ -378,6 +378,7 @@ func TestNoWSLVariantWithoutDistrosOrOnOtherOSes(t *testing.T) {
 		"no distros": {GOOS: "windows", WSLAvailable: func() bool { return false }},
 		"linux":      {GOOS: "linux", WSLAvailable: func() bool { return true }},
 	} {
+		o.AutostartEnabled = func() bool { return false } // not the real login entry
 		o.Port, o.ClientPaths, o.Exe = 47999, map[string]string{}, func() (string, error) { return `C:\x\cortex.exe`, nil }
 		r := httptest.NewRequest("GET", "/api/state", nil)
 		r.Host = good

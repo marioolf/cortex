@@ -18,17 +18,27 @@ func TestDecideTakeover(t *testing.T) {
 	same := func(a, b string) bool { return strings.EqualFold(a, b) }
 	for name, c := range map[string]struct {
 		running string
+		runVer  string
 		err     error
 		self    string
+		selfVer string
 		want    takeoverAction
 	}{
-		"different file":       {`C:\Users\a\AppData\Local\Programs\Cortex\cortex.exe`, nil, `C:\Users\a\Downloads\cortex.exe`, takeOver},
-		"same file":            {`C:\x\cortex.exe`, nil, `C:\X\Cortex.exe`, openExisting},
-		"ping failed":          {"", errors.New("403"), `C:\x\cortex.exe`, openExisting},
-		"ping failed, differs": {`C:\y\cortex.exe`, errors.New("no exe"), `C:\x\cortex.exe`, openExisting},
-		"own path unknown":     {`C:\y\cortex.exe`, nil, "", openExisting},
+		"different file":       {`C:\Users\a\AppData\Local\Programs\Cortex\cortex.exe`, "1.0.0", nil, `C:\Users\a\Downloads\cortex.exe`, "1.0.0", takeOver},
+		"same file":            {`C:\x\cortex.exe`, "1.0.0", nil, `C:\X\Cortex.exe`, "1.0.0", openExisting},
+		"ping failed":          {"", "", errors.New("403"), `C:\x\cortex.exe`, "1.0.0", openExisting},
+		"ping failed, differs": {`C:\y\cortex.exe`, "", errors.New("no exe"), `C:\x\cortex.exe`, "1.0.0", openExisting},
+		"own path unknown":     {`C:\y\cortex.exe`, "1.0.0", nil, "", "1.0.0", openExisting},
+		"running is newer":     {`C:\y\cortex.exe`, "1.10.0", nil, `C:\x\cortex.exe`, "1.9.5", openExisting},
+		"running is newer, v":  {`C:\y\cortex.exe`, "v2", nil, `C:\x\cortex.exe`, "1.9.5", openExisting},
+		"running is older":     {`C:\y\cortex.exe`, "1.9.5", nil, `C:\x\cortex.exe`, "1.10.0", takeOver},
+		"same version":         {`C:\y\cortex.exe`, "1.2", nil, `C:\x\cortex.exe`, "1.2.0", takeOver},
+		"running is dev":       {`C:\y\cortex.exe`, "dev", nil, `C:\x\cortex.exe`, "1.0.0", takeOver},
+		"this is dev":          {`C:\y\cortex.exe`, "3.0.0", nil, `C:\x\cortex.exe`, "dev", takeOver},
+		"unparsable":           {`C:\y\cortex.exe`, "3.0.0-rc1", nil, `C:\x\cortex.exe`, "1.0.0", takeOver},
+		"empty version":        {`C:\y\cortex.exe`, "", nil, `C:\x\cortex.exe`, "1.0.0", takeOver},
 	} {
-		got, why := decideTakeover(c.running, c.err, c.self, same)
+		got, why := decideTakeover(c.running, c.runVer, c.err, c.self, c.selfVer, same)
 		if got != c.want || why == "" {
 			t.Errorf("%s: %v %q", name, got, why)
 		}
@@ -43,6 +53,13 @@ func fakeCortex(t *testing.T, exe, code string) (port int, quits *atomic.Int32) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	return serveFakeCortex(t, ln, exe, code, nil)
+}
+
+// serveFakeCortex is fakeCortex on ln; onQuit, when set, runs instead of the
+// normal answer to a quit request.
+func serveFakeCortex(t *testing.T, ln net.Listener, exe, code string, onQuit func(w http.ResponseWriter, srv *http.Server)) (port int, quits *atomic.Int32) {
+	t.Helper()
 	quits = new(atomic.Int32)
 	var srv *http.Server
 	srv = &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +77,10 @@ func fakeCortex(t *testing.T, exe, code string) (port int, quits *atomic.Int32) 
 			json.NewEncoder(w).Encode(m)
 		case "/api/ext/quit":
 			quits.Add(1)
+			if onQuit != nil {
+				onQuit(w, srv)
+				return
+			}
 			w.Write([]byte(`{"ok":true}`))
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -130,5 +151,47 @@ func TestClaimPortRefusesAForeignProgram(t *testing.T) {
 	_, existing, err := claimPort(ln.Addr().(*net.TCPAddr).Port, cfgWithCode(t, "x"), "/x/cortex", time.Second)
 	if err == nil || existing || !strings.Contains(err.Error(), "taken by another program") {
 		t.Errorf("existing=%v err=%v", existing, err)
+	}
+}
+
+func TestClaimPortLeavesANewerRunningCopyAlone(t *testing.T) {
+	old := version
+	defer func() { version = old }()
+	// fakeCortex reports version "1"; this copy is older.
+	port, quits := fakeCortex(t, filepath.Join(t.TempDir(), "installed", "cortex.exe"), "code-1")
+	version = "0.9.0"
+	_, existing, err := claimPort(port, cfgWithCode(t, "code-1"), filepath.Join(t.TempDir(), "cortex.exe"), 2*time.Second)
+	if err != nil || !existing || quits.Load() != 0 {
+		t.Fatalf("existing=%v err=%v quits=%d", existing, err, quits.Load())
+	}
+}
+
+// Two new copies start at once: the other one wins, so the old Cortex quits on
+// the request of the other and this one's request dies with EOF. This copy
+// must then treat the winner as "already running", not fail.
+func TestClaimPortLosingTheRaceCountsAsAlreadyRunning(t *testing.T) {
+	old := raceGrace
+	raceGrace = 300 * time.Millisecond
+	defer func() { raceGrace = old }()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	port, _ := serveFakeCortex(t, ln, filepath.Join(t.TempDir(), "installed", "cortex.exe"), "code-1", func(w http.ResponseWriter, srv *http.Server) {
+		// The winner takes the port, then this request's connection drops (EOF).
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		srv.Close()
+		nl, lerr := net.Listen("tcp", addr)
+		if lerr != nil {
+			t.Error(lerr)
+		} else {
+			serveFakeCortex(t, nl, filepath.Join(t.TempDir(), "winner", "cortex.exe"), "code-1", nil)
+		}
+		conn.Close()
+	})
+	ln2, existing, err := claimPort(port, cfgWithCode(t, "code-1"), filepath.Join(t.TempDir(), "cortex.exe"), 2*time.Second)
+	if err != nil || !existing || ln2 != nil {
+		t.Fatalf("ln=%v existing=%v err=%v", ln2, existing, err)
 	}
 }

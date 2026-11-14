@@ -41,8 +41,9 @@ func TestStateInstallFromOptions(t *testing.T) {
 func TestInstallRoute(t *testing.T) {
 	var installs, quits atomic.Int32
 	var fail error
+	var warn string
 	en := setupWith(t, nil, func(o *Options) {
-		o.Install = func() error { installs.Add(1); return fail }
+		o.Install = func() (string, error) { installs.Add(1); return warn, fail }
 		o.Quit = func() { quits.Add(1) }
 	})
 	if got := en.do("POST", "/api/install", good, "", "application/json", `{}`).Code; got != 403 {
@@ -66,7 +67,7 @@ func TestInstallRoute(t *testing.T) {
 	}
 
 	fail = nil
-	if w := en.do("POST", "/api/install", good, tok, "application/json", `{}`); w.Code != 200 {
+	if w := en.do("POST", "/api/install", good, tok, "application/json", `{}`); w.Code != 200 || strings.Contains(w.Body.String(), "warning") {
 		t.Errorf("success: %d %s", w.Code, w.Body)
 	}
 	for i := 0; i < 100 && quits.Load() == 0; i++ {
@@ -74,6 +75,31 @@ func TestInstallRoute(t *testing.T) {
 	}
 	if quits.Load() != 1 || installs.Load() != 2 {
 		t.Errorf("installs = %d, quits = %d", installs.Load(), quits.Load())
+	}
+}
+
+// The copy worked but the shortcut or the login entry did not: the page is told,
+// and the hand-over still happens.
+func TestInstallRouteReportsAPartialFailure(t *testing.T) {
+	var quits atomic.Int32
+	warn := "Cortex was copied to X, but the Start Menu shortcut could not be created"
+	en := setupWith(t, nil, func(o *Options) {
+		o.Install = func() (string, error) { return warn, nil }
+		o.Quit = func() { quits.Add(1) }
+	})
+	w := en.do("POST", "/api/install", good, tok, "application/json", `{}`)
+	var got struct {
+		OK      bool
+		Warning string
+	}
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil || w.Code != 200 || !got.OK || got.Warning != warn {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+	for i := 0; i < 100 && quits.Load() == 0; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if quits.Load() != 1 {
+		t.Errorf("quits = %d", quits.Load())
 	}
 }
 
@@ -185,12 +211,21 @@ func TestQuitRunningOtherProgram(t *testing.T) {
 
 func TestRunningExe(t *testing.T) {
 	url, _ := serve(t, func(func()) {})
-	exe, err := RunningExe(url, pairing, 2*time.Second)
+	exe, ver, err := RunningExe(url, pairing, 2*time.Second)
 	if err != nil || exe != `C:\Apps\Cortex\cortex.exe` {
 		t.Errorf("exe = %q, err = %v", exe, err)
 	}
+	_ = ver // the version the engine was given, "" here; see below for a real one
+	withVer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(Header, "1")
+		w.Write([]byte(`{"ok":true,"version":"2.3.4","exe":"/x/cortex"}`))
+	}))
+	defer withVer.Close()
+	if exe, ver, err := RunningExe(withVer.URL+"/", pairing, 2*time.Second); err != nil || exe != "/x/cortex" || ver != "2.3.4" {
+		t.Errorf("exe = %q, version = %q, err = %v", exe, ver, err)
+	}
 	for _, code := range []string{"", "wrong"} {
-		if exe, err := RunningExe(url, code, 2*time.Second); err == nil || exe != "" {
+		if exe, _, err := RunningExe(url, code, 2*time.Second); err == nil || exe != "" {
 			t.Errorf("code %q: exe = %q, err = %v", code, exe, err)
 		}
 	}
@@ -200,7 +235,7 @@ func TestRunningExe(t *testing.T) {
 		w.Write([]byte(`{"ok":true,"version":"0.9"}`))
 	}))
 	defer old.Close()
-	if _, err := RunningExe(old.URL+"/", pairing, 2*time.Second); err == nil {
+	if _, _, err := RunningExe(old.URL+"/", pairing, 2*time.Second); err == nil {
 		t.Error("an answer without exe was accepted")
 	}
 }

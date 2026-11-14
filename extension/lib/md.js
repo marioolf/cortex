@@ -93,7 +93,7 @@
         const href = attr(n, 'href');
         if (!/^(https?:|mailto:)/i.test(href) || !text) return text;
         const url = encodeUrl(href);
-        return text === href && url === href ? href : '[' + text + '](' + url + ')';
+        return text === href && url === href ? href : '[' + text.replace(/[\[\]]/g, '\\$&') + '](' + url + ')';
       }
     }
     if (hasClass(n, 'katex')) {

@@ -202,7 +202,7 @@ func argMap(raw json.RawMessage) map[string]any {
 
 // addBubble appends one bubble to the session. Thinking and tool results are
 // not read at all; empty bubbles (thinking-only, UI placeholders) vanish.
-func addBubble(s *session.Session, b *bubble) {
+func addBubble(mg *session.Merger, b *bubble) {
 	r := role(b.Type)
 	if r == "" {
 		return
@@ -221,11 +221,7 @@ func addBubble(s *session.Session, b *bubble) {
 	}
 	text := strings.Join(parts, "\n\n")
 	// An agent turn is dozens of bubbles; one message per turn reads better.
-	if n := len(s.Messages); n > 0 && s.Messages[n-1].Role == r {
-		s.Messages[n-1].Text += "\n\n" + text
-		return
-	}
-	s.Messages = append(s.Messages, session.Message{Role: r, Text: text, Time: parseTime(b.CreatedAt)})
+	mg.Add(r, text, parseTime(b.CreatedAt))
 }
 
 func finish(s *session.Session, name string, created json.RawMessage) {
@@ -390,11 +386,13 @@ func (c *Collector) readWorkspace(dir, dbPath string, fn func(*session.Session))
 		}
 		s := &session.Session{Source: ID, ID: tab.TabID, Cwd: info.folder}
 		last := ""
+		var mg session.Merger
 		for _, lb := range tab.Bubbles {
 			b := bubble{Type: lb.Type, Text: lb.text(), CreatedAt: lb.CreatedAt}
-			addBubble(s, &b)
+			addBubble(&mg, &b)
 			last = b.Text
 		}
+		s.Messages = mg.Messages()
 		if len(s.Messages) == 0 {
 			continue
 		}
@@ -605,12 +603,14 @@ func readComposer(db *sql.DB, id, folder string) (*session.Session, error) {
 			return nil, err
 		}
 	}
+	var mg session.Merger
 	for i := range bubbles {
 		if s.Cwd == "" && len(bubbles[i].WorkspaceURIs) > 0 {
 			s.Cwd = uriToPath(bubbles[i].WorkspaceURIs[0])
 		}
-		addBubble(s, &bubbles[i])
+		addBubble(&mg, &bubbles[i])
 	}
+	s.Messages = mg.Messages()
 	finish(s, cd.Name, cd.CreatedAt)
 	return s, nil
 }

@@ -149,6 +149,7 @@ func build(info sessionInfo, msgs []message) *session.Session {
 		}
 		return msgs[i].id < msgs[j].id
 	})
+	var mg session.Merger
 	for _, m := range msgs {
 		if m.role != "user" && m.role != "assistant" {
 			continue
@@ -179,12 +180,9 @@ func build(info sessionInfo, msgs []message) *session.Session {
 			ts = time.UnixMilli(m.created)
 		}
 		// An assistant turn is several messages (one per model step).
-		if n := len(s.Messages); n > 0 && s.Messages[n-1].Role == m.role {
-			s.Messages[n-1].Text += "\n\n" + text
-			continue
-		}
-		s.Messages = append(s.Messages, session.Message{Role: m.role, Text: text, Time: ts})
+		mg.Add(m.role, text, ts)
 	}
+	s.Messages = mg.Messages()
 	if s.Title == "" {
 		for _, m := range s.Messages {
 			if m.Role == "user" {

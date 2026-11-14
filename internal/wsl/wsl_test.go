@@ -80,3 +80,19 @@ func TestCacheKeepsAnEmptyResult(t *testing.T) {
 		t.Errorf("an empty result was fetched %d times, want 1", calls)
 	}
 }
+
+func TestSetLookupReplacesAndRestores(t *testing.T) {
+	restore := SetLookup(func() []string { return []string{"Fake"} })
+	if got := Roots(); !reflect.DeepEqual(got, []string{`\\wsl.localhost\Fake`}) {
+		t.Errorf("replaced: %q", got)
+	}
+	restore()
+	if got := running.fetch; got == nil {
+		t.Error("not restored")
+	}
+	restore2 := SetLookup(func() []string { return nil })
+	defer restore2()
+	if got := Homes(); got != nil {
+		t.Errorf("empty lookup: %q", got)
+	}
+}

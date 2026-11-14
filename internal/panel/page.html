@@ -633,9 +633,9 @@ $("install-go").addEventListener("click", async () => {
   $("install-go").disabled = true;
   $("install-msg").textContent = "Installing...";
   try {
-    await call("/api/install", {});
+    const r = await call("/api/install", {});
     stopped = true; // this process is handing over; its token is about to stop working
-    $("install-msg").textContent = "Installed in " + state.install.target + ". This panel will stop working: the installed copy of Cortex opens a new one in your browser in a moment. You can close this tab.";
+    $("install-msg").textContent = (r.warning ? "Warning: " + r.warning + " " : "") + "Installed in " + state.install.target + ". This panel will stop working: the installed copy of Cortex opens a new one in your browser in a moment. You can close this tab.";
     $("install-go").hidden = true;
   } catch (e) {
     $("install-msg").textContent = "Could not install: " + e.message;

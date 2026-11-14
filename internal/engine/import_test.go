@@ -122,3 +122,21 @@ func TestMessagesAreCappedForEverySource(t *testing.T) {
 		check(t, root)
 	})
 }
+
+// The title of a skipped conversation is redacted and cut before it is shown.
+func TestImportSkipMessageRedactsAndCutsTheTitle(t *testing.T) {
+	e, _, _ := setup(t, &fake{})
+	c := claudeExp("", "text")
+	c["name"] = "Token ghp_abcdefghijklmnopqrstuvwxyz0123 " + strings.Repeat("long ", 100)
+	sum, err := e.Import(exportFile(t, c))
+	if err != nil || sum.Unreadable != 1 || len(sum.Errors) != 1 {
+		t.Fatalf("%+v %v", sum, err)
+	}
+	msg := sum.Errors[0]
+	if strings.Contains(msg, "ghp_abcdefghijklmnopqrstuvwxyz0123") || !strings.Contains(msg, "no id") {
+		t.Errorf("secret shown or reason lost: %q", msg)
+	}
+	if len([]rune(msg)) > 150 {
+		t.Errorf("title not cut: %d characters", len([]rune(msg)))
+	}
+}

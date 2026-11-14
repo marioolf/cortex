@@ -79,6 +79,11 @@ test('links with parentheses, spaces and angle brackets stay valid Markdown', ()
   assert.equal(md('<p><a href="https://e.org/a_(b)">https://e.org/a_(b)</a></p>'), '[https://e.org/a_(b)](https://e.org/a_%28b%29)');
 });
 
+test('brackets in link text are escaped so that the link stays one link', () => {
+  assert.equal(md('<p><a href="https://example.org/a">see [1] and [2]</a></p>'), '[see \\[1\\] and \\[2\\]](https://example.org/a)');
+  assert.equal(md('<p><a href="https://example.org/a">a ] b</a></p>'), '[a \\] b](https://example.org/a)');
+});
+
 // A node whose textContent does not recurse, so that the test can nest deeper than a stack allows.
 function deep(levels, leafText, tagName) {
   let node = { nodeType: 3, textContent: leafText };

@@ -54,7 +54,10 @@ type Options struct {
 
 	// For the install banner (Windows only; nil means not supported).
 	InstallState func() InstallState
-	Install      func() error // installs and arranges the hand-over; the panel then quits
+	// Install installs and arranges the hand-over; the panel then quits. A
+	// warning is a partial failure (the program was copied, but the shortcut or
+	// the login entry was not): the page shows it, and the hand-over still happens.
+	Install func() (warning string, err error)
 
 	// For importing exports.
 	MaxImport int64  // largest upload in bytes; 0 means 2 GiB
@@ -532,12 +535,17 @@ func (p *panel) install(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "an install is already in progress", http.StatusConflict)
 		return
 	}
-	if err := p.opt.Install(); err != nil {
+	warning, err := p.opt.Install()
+	if err != nil {
 		p.installing.Store(false)
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	out := struct {
+		OK      bool   `json:"ok"`
+		Warning string `json:"warning,omitempty"`
+	}{OK: true, Warning: warning}
+	writeJSON(w, http.StatusOK, out)
 	go p.opt.Quit()
 }
 
@@ -565,34 +573,35 @@ func Running(url string, timeout time.Duration) bool {
 }
 
 // RunningExe asks the Cortex whose panel is at url which program file it runs
-// from, proving itself with the pairing code. It fails when the answer is not
+// from and which version it is, proving itself with the pairing code. It fails when the answer is not
 // a Cortex's, the code is wrong or missing, or the Cortex is older than this
 // field; the caller must then treat the running Cortex as unknown.
-func RunningExe(url, code string, timeout time.Duration) (string, error) {
+func RunningExe(url, code string, timeout time.Duration) (exe, version string, err error) {
 	req, err := http.NewRequest(http.MethodGet, url+strings.TrimPrefix(routePing, "/"), nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set(pairingHeader, code)
 	c := http.Client{Timeout: timeout}
 	resp, err := c.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("it did not accept the pairing code (HTTP %d)", resp.StatusCode)
+		return "", "", fmt.Errorf("it did not accept the pairing code (HTTP %d)", resp.StatusCode)
 	}
 	var ping struct {
-		Exe string `json:"exe"`
+		Exe     string `json:"exe"`
+		Version string `json:"version"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ping); err != nil {
-		return "", fmt.Errorf("unexpected answer: %w", err)
+		return "", "", fmt.Errorf("unexpected answer: %w", err)
 	}
 	if ping.Exe == "" {
-		return "", errors.New("it does not say where it runs from (an older version)")
+		return "", "", errors.New("it does not say where it runs from (an older version)")
 	}
-	return ping.Exe, nil
+	return ping.Exe, ping.Version, nil
 }
 
 // QuitRunning asks the Cortex whose panel is at url to quit, proving itself with

@@ -212,9 +212,14 @@ func unquote(v string) string {
 }
 
 // unsafeRune reports a character that must not reach a result line or a note
-// path: C0 and C1 controls (line breaks, escape sequences, ...) and the Unicode
-// line and paragraph separators.
-func unsafeRune(r rune) bool { return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' }
+// path: C0 and C1 controls (line breaks, escape sequences, ...), the Unicode
+// line and paragraph separators and the bidi controls, which let a value spoof
+// how the text around it reads (the vault drops the same ones from file names).
+func unsafeRune(r rune) bool {
+	return unicode.IsControl(r) || r == '\u2028' || r == '\u2029' ||
+		r == '\u061C' || r == '\u200E' || r == '\u200F' ||
+		(r >= '\u202A' && r <= '\u202E') || (r >= '\u2066' && r <= '\u2069')
+}
 
 // oneLine turns s into one line of plain text: unsafe characters and any run of
 // whitespace become one space. It cuts the result to at most max characters; 0

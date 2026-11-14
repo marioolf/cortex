@@ -277,7 +277,7 @@ const (
 
 // Besides the characters no OS accepts: DEL and the Unicode bidi and format
 // controls, which let a title spoof how a name reads.
-var unsafeChars = regexp.MustCompile(`[\\/:*?"<>|#^\[\]\x00-\x1f\x7f\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}]+`)
+var unsafeChars = regexp.MustCompile(`[\\/:*?"<>|#^\[\]\x00-\x1f\x7f\x{061C}\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}]+`)
 
 // safeName makes s usable as a file name on every OS and as an Obsidian link
 // target, at most max bytes long.

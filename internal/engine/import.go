@@ -38,6 +38,12 @@ func (e *Engine) importWith(path string, opt importer.Options) (ImportSummary, e
 		}
 	}
 	opt.Skip = func(reason string) { addErr(reason) }
+	opt.Clean = func(s string) string { // titles come from the conversation: same redactor as the notes
+		e.mu.Lock()
+		red := e.red
+		e.mu.Unlock()
+		return red.Apply(s)
+	}
 	unreadable, err := importer.EachWith(path, opt, func(s *session.Session) error {
 		sum.Conversations++
 		res, werr := e.Ingest(s, true)

@@ -26,6 +26,15 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
+      - name: Extension tests
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Run the extension tests
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: extension
+        run: node --test
       - name: Cross-build every release target without cgo
         # The Windows-only files (tray, installer) are not compiled on this
         # runner otherwise, and a cgo dependency would break the release.

@@ -633,3 +633,15 @@ func TestToolDescriptionsListWebSources(t *testing.T) {
 		}
 	}
 }
+
+// Bidi controls are dropped from displayed values, all of them: the vault does
+// the same for file names.
+func TestOneLineDropsBidiControls(t *testing.T) {
+	in := "a\u061Cb\u200Ec\u200Fd\u202Ae\u202Bf\u202Cg\u202Dh\u202Ei\u2066j\u2067k\u2068l\u2069m"
+	if got := oneLine(in, 0); got != "a b c d e f g h i j k l m" {
+		t.Errorf("%q", got)
+	}
+	if unsafeRune('x') || unsafeRune('é') {
+		t.Error("ordinary characters are unsafe")
+	}
+}

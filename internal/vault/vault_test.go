@@ -191,7 +191,8 @@ func TestSafeName(t *testing.T) {
 	}{
 		{"a\x7fb", 50, "a b"},
 		{"re‮v‏e⁦al", 50, "re v e al"},
-		{"😀😀😀", 9, "😀😀"}, // never splits a character
+		{"a\u061Cb\u200Ec\u202Ad\u202Ee\u2066f\u2069g", 50, "a b c d e f g"}, // every bidi control, Arabic letter mark included
+		{"😀😀😀", 9, "😀😀"},                                                     // never splits a character
 		{"abc def", 5, "abc d"},
 		{"abc def", 4, "abc"},
 		{"..x..", 50, "x"},

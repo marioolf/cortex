@@ -299,3 +299,23 @@ func TestZipIgnoresNonConversationJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A zip whose compressed data is corrupt is a damaged zip, not "unsupported".
+func TestCorruptZipIsReportedAsDamaged(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("conversations.json")
+	w.Write(mustJSON(t, []any{gptConv()}))
+	zw.Close()
+	data := buf.Bytes()
+	data[30+len("conversations.json")] = 0x07 // a final block of the reserved type: invalid deflate data
+	_, err := Parse(writeFile(t, "export.zip", data))
+	if err == nil || errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "damaged zip") {
+		t.Errorf("%v", err)
+	}
+	// And a file that only starts like a zip.
+	_, err = Parse(writeFile(t, "bad.zip", []byte("PK\x03\x04 not really")))
+	if err == nil || errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "damaged zip") {
+		t.Errorf("%v", err)
+	}
+}

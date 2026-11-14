@@ -422,22 +422,24 @@ func runCortex(port int, configPath string, explicitConfig, noBrowser, noAutosta
 			return panel.InstallState{Supported: true, Installed: inst.Installed(),
 				RunningFrom: filepath.Dir(inst.Exe), Target: inst.Target}
 		}
-		opt.Install = func() error {
+		opt.Install = func() (string, error) {
 			// This process holds the port and is the Cortex to replace, so it
 			// does not ask anyone to quit; run starts the new copy once the
 			// port is free (see below).
 			copied, err := inst.Install(false)
 			if !copied && err != nil {
-				return err
+				return "", err
 			}
+			warning := ""
 			if err != nil {
-				// The program is in place: hand over anyway, and keep what
-				// failed (the shortcut or the login entry) in the log.
+				// The program is in place: hand over anyway, keep what failed
+				// (the shortcut or the login entry) in the log and tell the page.
 				log.Printf("install: %v", err)
+				warning = err.Error()
 			}
 			log.Printf("installed to %s; handing over", inst.Target)
 			handoff.Store(true)
-			return nil
+			return warning, nil
 		}
 	}
 	srv := &http.Server{

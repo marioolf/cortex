@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/marioolf/cortex/internal/wsl"
@@ -114,5 +115,42 @@ func TestCapText(t *testing.T) {
 	big := strings.Repeat("a", 50<<20)
 	if out := CapText(big, 1000); len(out) > 1100 || !strings.HasSuffix(out, "[… 52427800 more characters not saved by Cortex]") {
 		t.Fatalf("%d bytes, %q", len(out), out[len(out)-60:])
+	}
+}
+
+func TestMergerJoinsConsecutiveSameRole(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	var g Merger
+	g.Add("user", "a", t0)
+	g.Add("assistant", "b", t0.Add(time.Second))
+	g.Add("assistant", "c", t0.Add(2*time.Second))
+	g.Add("assistant", "d", t0.Add(3*time.Second))
+	_ = g.Messages() // reading in the middle must not break later additions
+	g.Add("assistant", "e", t0)
+	g.Add("user", "f", t0)
+	got := g.Messages()
+	if len(got) != 3 || got[0].Text != "a" || got[1].Text != "b\n\nc\n\nd\n\ne" || got[2].Text != "f" {
+		t.Fatalf("%+v", got)
+	}
+	if !got[1].Time.Equal(t0.Add(time.Second)) {
+		t.Errorf("time of a merged message is the first piece's: %v", got[1].Time)
+	}
+	if n := len((&Merger{}).Messages()); n != 0 {
+		t.Errorf("empty: %d", n)
+	}
+}
+
+func TestMergerIsLinear(t *testing.T) {
+	var g Merger
+	start := time.Now()
+	for i := 0; i < 300_000; i++ {
+		g.Add("assistant", "piece", time.Time{})
+	}
+	got := g.Messages()
+	if len(got) != 1 || strings.Count(got[0].Text, "piece") != 300_000 {
+		t.Fatal("not merged")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("took %v", d)
 	}
 }

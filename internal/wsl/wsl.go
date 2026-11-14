@@ -24,6 +24,21 @@ func Roots() []string {
 	return roots
 }
 
+// SetLookup replaces the lookup of running distros (which spawns wsl.exe on
+// Windows) and returns a function that puts the real one back. It is for tests:
+// nothing a test does may run wsl.exe or reach into the developer's distros.
+func SetLookup(fetch func() []string) (restore func()) {
+	running.mu.Lock()
+	defer running.mu.Unlock()
+	old := running.fetch
+	running.fetch, running.have = fetch, false
+	return func() {
+		running.mu.Lock()
+		defer running.mu.Unlock()
+		running.fetch, running.have = old, false
+	}
+}
+
 func rootOf(distro string) string { return `\\wsl.localhost\` + distro }
 
 // cacheTTL is how long the list of running distros is reused: Homes and Roots

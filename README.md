@@ -105,6 +105,9 @@ pairing code from the config file, through `POST /api/ext/quit`), waits up to
 about 10 seconds for the port to be free and starts in its place. Its panel then
 shows the "Install" banner: click it and the new version replaces the installed
 file and restarts from there (`cortex install` does the same from a terminal).
+A running Cortex whose version is strictly newer than the new file (compared as
+dotted numbers; an unknown version such as `dev` on either side does not count)
+is left alone as well, so an old download cannot displace a newer install.
 If the running Cortex is the same file, or cannot be asked (a version older
 than this feature, which does not say where it runs from, or a pairing code
 that does not match), the new file only opens the existing panel and exits, as
@@ -177,7 +180,8 @@ only accepts connections from your own machine. Options for `run`:
 - `-port N`: use another port.
 - `-no-autostart`: see below.
 - `-no-tray`: no notification-area icon (Windows).
-- `-config FILE`: use another config file.
+- `-config FILE`: use another config file. (`sync`, `import`, `summarize`, `mcp`,
+  `install` and `uninstall` accept it too.)
 
 If Cortex is already running from the same file, starting it again just opens
 the panel. If the running Cortex is a different file (a newer download while the
@@ -385,9 +389,10 @@ what to do, using the path of the Cortex program that is running:
   default); it finds its own config, so it needs no `-vault`.
 - Codex CLI: a `[mcp_servers.cortex]` table for `~/.codex/config.toml`.
 - OpenCode: `{"mcp": {"servers": {"cortex": {"type": "local", "command": [...]}}}}`
-  for `opencode.json`, the shape of the current OpenCode documentation and
-  published config schema (`https://opencode.ai/config.json`, where names placed
-  directly under `mcp` are marked deprecated). The panel also shows the older
+  for `opencode.json`, the shape in the published config schema
+  (`https://opencode.ai/config.json`, as read on 2026-11-14, where names placed
+  directly under `mcp` are marked deprecated); it has not been tried against
+  OpenCode itself. The panel also shows the older
   shape, `{"mcp": {"cortex": {"type": "local", "command": [...], "enabled": true}}}`, for releases that
   do not know `servers`.
 - A paragraph to paste into `CLAUDE.md`, `AGENTS.md` or your tool's custom
@@ -439,8 +444,9 @@ The command runs without a shell, in an empty folder (`summaries-work`, next to
 the config file, with symlinks resolved and `PWD` set to it), for at most 5
 minutes, with its output capped at 32 KB; the environment variable
 `CORTEX_SUMMARY=1` is set. It runs in a process group of its own (on Windows
-Cortex runs `taskkill /T /F`), and when it times out or Cortex quits, the whole
-tree is killed, not just the program. Its output is cleaned (invalid UTF-8
+Cortex runs `taskkill /T /F`), and when it times out or Cortex quits, the tool
+and the processes it started in that group are stopped; a process that
+deliberately detaches itself (a new session, a daemon) is not. Its output is cleaned (invalid UTF-8
 replaced, escape sequences and control characters other than newline and tab
 removed) and passed through the same redaction as the notes, including your
 `redact_patterns`, before it is stored. These tools keep their own
@@ -475,7 +481,7 @@ change the idle time or the rate limit either.
   content. If the conversation goes on, a new summary replaces the old one once
   it is quiet again.
 - One summary at a time, at most `max_per_hour` (20) per hour. A note whose
-  summary failed is not retried for the same content for an hour. Failures,
+  summary failed is not retried for the same content for an hour. Failures
   show in the panel. A failure names the note by its source and the first 8
   characters of the session ID (never the title or the file name) and holds at
   most the first line of the tool's error output, cut to 200 characters and
@@ -521,9 +527,10 @@ the top (`warnings` in `/api/state`), and its Summaries section explains the
 problem instead of offering controls until the file is fixed. Your block is kept
 as written when the panel saves other settings. Fix the file and restart Cortex
 (or change any other setting in the panel, which re-reads the file). A config
-file that is not valid JSON at all is still an error for `run`, which does not
-guess; it is logged (see "Build from source") and, without a console, shown in a
-message box.
+file that is not valid JSON at all is an error for `run`, `sync`, `import`,
+`summarize` and `mcp`, which do not guess; the message names the file, and for
+`run` it is logged (see "Build from source") and, without a console, shown in a
+message box. `install` and `uninstall` only warn about it and go on.
 
 ## What you get
 
@@ -659,8 +666,8 @@ The panel writes this file when you change a setting, starting from what is in
 the file at that moment, so edits made by hand while Cortex is running are kept
 (unless the file no longer parses, in which case the panel's in-memory settings
 are written over it). They take effect the next time Cortex starts, or at the
-next change made in the panel. `-config FILE` on `run`, `sync`, `import` and `summarize` uses a
-different file. `run` also keeps its log, `cortex.log`, in the same folder.
+next change made in the panel. `-config FILE` on `run`, `sync`, `import`,
+`summarize`, `mcp`, `install` and `uninstall` uses a different file. `run` also keeps its log, `cortex.log`, in the same folder.
 
 ## License
 

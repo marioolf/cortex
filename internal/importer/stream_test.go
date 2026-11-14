@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marioolf/cortex/internal/session"
 )
@@ -153,7 +154,7 @@ func TestEntryAndTotalCaps(t *testing.T) {
 // An element ends where the structure says, whatever is inside its strings.
 func TestScannerHandlesAwkwardJSON(t *testing.T) {
 	text := strings.Repeat(`a"]}\\ , [{`, 30000) // crosses many read chunks
-	data := "\xef\xbb\xbf \n[" + claudeJSON("one", text) + " , 42 ,\"str]\", null,[1,[2]]\n," + claudeJSON("two", "x") + "\n]trailing"
+	data := "\xef\xbb\xbf \n[" + claudeJSON("one", text) + " , 42 ,\"str]\", null,[1,[2]]\n," + claudeJSON("two", "x") + "\n] \r\n"
 	c, n, err := each(t, writeFile(t, "c.json", []byte(data)), Options{})
 	if err != nil || n != 0 || strings.Join(c.ids, ",") != "one,two" {
 		t.Fatalf("%v %d %v", c.ids, n, err)
@@ -273,5 +274,56 @@ func TestEachMemoryStaysBounded(t *testing.T) {
 	t.Logf("export %d MB, %d conversations, peak live heap %d MB", st.Size()>>20, count, peak>>20)
 	if peak > bound {
 		t.Errorf("live heap %d MB exceeds %d MB", peak>>20, bound>>20)
+	}
+}
+
+// Anything after the closing "]" that is not whitespace is an error, but the
+// conversations before it were valid and stay delivered.
+func TestDataAfterTheEndOfTheArrayIsAnError(t *testing.T) {
+	one := claudeJSON("a", "x")
+	for name, data := range map[string]string{
+		"second array": "[" + one + "][" + claudeJSON("b", "y") + "]",
+		"garbage":      "[" + one + "] garbage",
+		"after space":  "[" + one + "]\n\n  {",
+	} {
+		c, _, err := each(t, writeFile(t, "c.json", []byte(data)), Options{})
+		if err == nil || !errors.Is(err, errTrailing) || !strings.Contains(err.Error(), "unexpected data after the end of the export") {
+			t.Errorf("%s: %v", name, err)
+		}
+		if strings.Join(c.ids, ",") != "a" {
+			t.Errorf("%s: kept %v", name, c.ids)
+		}
+	}
+	// Inside a zip the entry name is added, and it is still incomplete.
+	zp := makeZip(t, map[string][]byte{"conversations.json": []byte("[" + one + "] x")})
+	if _, _, err := each(t, zp, Options{}); err == nil || !strings.Contains(err.Error(), "conversations.json") || !errors.Is(err, errTrailing) {
+		t.Errorf("zip: %v", err)
+	}
+}
+
+// Merging consecutive same-role messages must be linear: this used to take
+// minutes, because every piece copied the whole text so far.
+func TestManyConsecutiveMessagesMergeInLinearTime(t *testing.T) {
+	const n = 200_000
+	var b strings.Builder
+	b.WriteString(`[{"uuid":"big","name":"n","chat_messages":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"sender":"assistant","text":"piece"}`)
+	}
+	b.WriteString(`]}]`)
+	p := writeFile(t, "c.json", []byte(b.String()))
+	start := time.Now()
+	var got *session.Session
+	if _, err := Each(p, func(s *session.Session) error { got = s; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 2*time.Second*raceSlowdown { // 0.2 s normally; quadratic merging took minutes
+		t.Errorf("took %v", d)
+	}
+	if got == nil || len(got.Messages) != 1 || strings.Count(got.Messages[0].Text, "piece") != n {
+		t.Fatalf("not merged into one message: %+v", got)
 	}
 }
