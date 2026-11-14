@@ -93,8 +93,10 @@ func TestSummariesAPI(t *testing.T) {
 
 func TestSummariesCustomFromTheConfigFile(t *testing.T) {
 	fakeOnPath(t, "nothing-relevant")
+	// Absolute for the OS the test runs on: "/opt/..." is not on Windows.
+	prog := filepath.Join(t.TempDir(), "my tool", "summarise")
 	en := setupWith(t, func(c *config.Config) {
-		c.Summaries.Command = []string{"/opt/my tool/summarise", "--fast"}
+		c.Summaries.Command = []string{prog, "--fast"}
 	}, nil)
 	st := en.state(t).Summaries
 	if !st.CustomAvailable || st.Tool != "" {
@@ -104,7 +106,7 @@ func TestSummariesCustomFromTheConfigFile(t *testing.T) {
 		t.Fatalf("custom refused although the file has a command: %d", c)
 	}
 	st = en.state(t).Summaries
-	if st.Tool != "custom" || len(st.Command) != 2 || st.Command[0] != "/opt/my tool/summarise" {
+	if st.Tool != "custom" || len(st.Command) != 2 || st.Command[0] != prog {
 		t.Errorf("state = %+v", st)
 	}
 	// Changing other things from the panel keeps the hand-written command.
