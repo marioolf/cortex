@@ -1,0 +1,142 @@
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"time"
+
+	"github.com/marioolf/cortex/internal/config"
+	"github.com/marioolf/cortex/internal/install"
+	"github.com/marioolf/cortex/internal/panel"
+)
+
+// installEnv is what the install commands need from the system, so tests can
+// replace it: the OS name and the way to build an Installer.
+type installEnv struct {
+	goos string
+	new  func(configPath string, port int) (*install.Installer, error)
+}
+
+var realInstallEnv = installEnv{goos: runtime.GOOS, new: func(configPath string, port int) (*install.Installer, error) {
+	cfg, err := config.LoadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	url := "http://" + panelAddr(port) + "/"
+	// A running Cortex is asked to quit with the pairing code from the config file.
+	quit := func() error { return panel.QuitRunning(url, cfg.ExtensionToken, 10*time.Second) }
+	return newInstaller(configPath, cfg.Vault, quit)
+}}
+
+func panelAddr(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
+
+// errManual is what install and uninstall answer where there is no installer.
+var errManual = errors.New("installation is manual on this system for now: put the cortex binary somewhere on your PATH; starting at login is handled from the control panel")
+
+// newInstaller describes the installation of the running program. quit may be
+// nil when the caller never asks another Cortex to stop.
+func newInstaller(configPath, vault string, quit func() error) (*install.Installer, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	target, lnk, err := install.Locations(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	if quit == nil {
+		quit = func() error { return nil }
+	}
+	return &install.Installer{
+		Exe: exe, Target: target, Shortcut: lnk,
+		ConfigFile: configPath, LogFile: filepath.Join(filepath.Dir(configPath), logName), Vault: vault,
+		FoldCase: runtime.GOOS == "windows",
+		Sys:      install.NewSystem(quit),
+	}, nil
+}
+
+// installFlags parses the flags both commands share and finds the config file.
+func installFlags(name string, args []string, stderr io.Writer, extra func(*flag.FlagSet)) (port int, configPath string, explicit bool, err error) {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	p := fs.Int("port", defaultPort, "port of the control panel of a running Cortex")
+	c := fs.String("config", "", "config file (default: the one in the OS config directory)")
+	if extra != nil {
+		extra(fs)
+	}
+	if err := fs.Parse(args); err != nil {
+		return 0, "", false, err
+	}
+	if fs.NArg() > 0 {
+		return 0, "", false, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	configPath = *c
+	if configPath == "" {
+		if configPath, err = config.Path(); err != nil {
+			return 0, "", false, err
+		}
+	}
+	return *p, configPath, *c != "", nil
+}
+
+func installCmd(args []string, stdout, stderr io.Writer, env installEnv) error {
+	if env.goos != "windows" {
+		return errManual
+	}
+	port, configPath, explicit, err := installFlags("install", args, stderr, nil)
+	if err != nil {
+		return err
+	}
+	in, err := env.new(configPath, port)
+	if err != nil {
+		return err
+	}
+	copied, err := in.Install(true)
+	if err != nil {
+		return err
+	}
+	if copied {
+		fmt.Fprintf(stdout, "Installed Cortex to %s\n", in.Target)
+	} else {
+		fmt.Fprintf(stdout, "Cortex is already installed at %s; the Start Menu shortcut and start at login were refreshed.\n", in.Target)
+		return nil // this is the running copy: nothing to hand over to
+	}
+	fmt.Fprintf(stdout, "Added the Start Menu shortcut %s and registered Cortex to start at login.\n", in.Shortcut)
+	// The panel opens in the browser, as after a first start.
+	if err := in.Sys.Start(in.Target, runArgs(port, configPath, explicit, false)); err != nil {
+		return fmt.Errorf("installed, but could not start it: %w (start it from the Start Menu)", err)
+	}
+	fmt.Fprintln(stdout, "Started it; the control panel opens in your browser. You can delete the file you ran this from.")
+	return nil
+}
+
+func uninstallCmd(args []string, stdout, stderr io.Writer, env installEnv) error {
+	if env.goos != "windows" {
+		return errManual
+	}
+	var purge *bool
+	port, configPath, _, err := installFlags("uninstall", args, stderr, func(fs *flag.FlagSet) {
+		purge = fs.Bool("purge", false, "also remove the config file and the log (the vault is never removed)")
+	})
+	if err != nil {
+		return err
+	}
+	in, err := env.new(configPath, port)
+	if err != nil {
+		return err
+	}
+	rep, err := in.Uninstall(*purge)
+	for _, l := range rep.Removed {
+		fmt.Fprintln(stdout, "removed:", l)
+	}
+	for _, l := range rep.Left {
+		fmt.Fprintln(stdout, "left in place:", l)
+	}
+	return err
+}

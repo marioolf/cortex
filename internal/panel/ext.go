@@ -28,6 +28,7 @@ const (
 	routePing       = "/api/ext/ping"
 	routeIngest     = "/api/ext/ingest"
 	routeRegenerate = "/api/ext/regenerate" // an ordinary panel route, despite the prefix
+	routeQuit       = "/api/ext/quit"       // for `cortex install`, which must stop a running Cortex and has no panel token
 )
 
 // hostsOf lists the sites each source may link to.
@@ -39,7 +40,9 @@ var hostsOf = map[string][]string{
 
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
-func isExtRoute(path string) bool { return path == routePing || path == routeIngest }
+func isExtRoute(path string) bool {
+	return path == routePing || path == routeIngest || path == routeQuit
+}
 
 // extAllowed applies the extra rules of the extension routes. A web page must
 // never reach them, even if it somehow learned the code, so a request that
@@ -61,6 +64,18 @@ func (p *panel) extAllowed(r *http.Request) bool {
 
 func (p *panel) extPing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": p.e.Version})
+}
+
+// extQuit stops Cortex for a caller that holds the pairing code: the installer
+// reads it from the config file. Whoever has the code can already add notes, and
+// anything that can read the file can end the process anyway.
+func (p *panel) extQuit(w http.ResponseWriter, r *http.Request) {
+	if p.opt.Quit == nil {
+		jsonError(w, "not available", http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	go p.opt.Quit()
 }
 
 type ingestMessage struct {

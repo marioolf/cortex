@@ -31,7 +31,84 @@ The web sources are not read from disk: they arrive by importing an export file
 (ChatGPT and Claude) or from the browser extension (ChatGPT, Claude and Gemini);
 see "Web chats". The extension is not in any browser store yet.
 
-## Try it
+## Install
+
+Download the file for your system from the Releases page of the repository, next
+to `checksums.txt` (SHA-256 of every file; compare with `sha256sum -c
+checksums.txt` or `Get-FileHash`). Releases are not code-signed yet, so Windows
+and macOS warn about the program; what to expect is described below.
+
+### Windows
+
+1. Download `cortex_VERSION_windows_amd64.zip` (most PCs; `arm64` for ARM
+   machines such as Copilot+ PCs) and unzip it.
+2. Double-click `cortex.exe`. Windows SmartScreen will most likely stop it with a
+   blue window titled "Windows protected your PC", saying that Microsoft Defender
+   SmartScreen prevented an unrecognized app from starting and that running it
+   might put your PC at risk, with the publisher shown as "Unknown publisher".
+   This happens because the program has no code-signing certificate and is new to
+   Microsoft's reputation system, not because SmartScreen found anything in it.
+   Click "More info", then "Run anyway", to proceed. If you would rather not run
+   a program you cannot verify, build it from source (see "Build from source"):
+   a program you build yourself is also unsigned, but you know where it came from.
+3. Your browser opens the control panel. At the top it says that Cortex is
+   running from the folder you unzipped it to; click "Install". Cortex copies
+   itself to `%LOCALAPPDATA%\Programs\Cortex\cortex.exe`, adds a Start Menu
+   shortcut and registers itself to start at login, then restarts from there and
+   opens a new panel. After that you can delete the downloaded file. (Until you
+   install, Cortex does not register itself to start at login, because that entry
+   would point into your Downloads folder and stop working when the file is
+   deleted.) `cortex.exe install` does the same from a terminal.
+
+Cortex has no window of its own: look for its icon in the notification area
+(the taskbar's corner, possibly under the "^" arrow). A click opens the panel;
+the right-click menu has "Open Cortex", a line saying whether it is running or
+paused, "Pause"/"Resume" and "Quit". Pass `-no-tray` to `run` to go without the
+icon; if the icon cannot be created, Cortex keeps running without it and logs
+why.
+
+### macOS and Linux
+
+Download `cortex_VERSION_darwin_arm64.tar.gz` (Apple silicon), `darwin_amd64`
+(Intel), `linux_amd64` or `linux_arm64`, extract it, put `cortex` in a folder on
+your `PATH` (for example `~/.local/bin`) and run `cortex`. There is no installer
+on these systems yet (`cortex install` says so and exits with an error); to start
+Cortex at login, switch it on in the panel, which registers whichever copy is
+running, so run it from its final place first.
+
+macOS Gatekeeper blocks programs that are not signed and notarized by an Apple
+developer when they carry the "quarantine" mark that browsers put on downloads.
+A file extracted from the archive with `tar` in the Terminal does not usually get
+the mark and just runs; one opened from Finder may be refused with a message
+along the lines of "Apple could not verify "cortex" is free of malware". If you
+decide to trust the file, you can allow it in System Settings, Privacy & Security
+("Open Anyway"), or clear the mark yourself with
+`xattr -d com.apple.quarantine /path/to/cortex`. That is your decision to make;
+Cortex does not need it for anything else. (The wording above comes from Apple's
+documentation and has not been checked on a Mac.)
+
+### Update
+
+Cortex never checks for updates or contacts the Internet. To update, download the
+new release, run it, and click "Install" in the panel (Windows; the new version
+replaces the old one and restarts) or run `cortex install`. On macOS and Linux,
+replace the `cortex` file. The panel's footer and `cortex version` show the version
+you are running.
+
+### Uninstall
+
+On Windows, `cortex uninstall` (run it from the installed copy or from any other
+one) quits a running Cortex, removes the start-at-login entry, the Start Menu
+shortcut and the installed program. It leaves your settings and always leaves the
+vault. `cortex uninstall -purge` also removes the config file and the log (and
+their folder if that leaves it empty); the vault is never removed, so delete it
+yourself if you want the notes gone. It prints what was removed and what was
+left. The program cannot delete itself while it runs, so when it is the installed
+copy, a short-lived helper removes the file a moment after it exits. On macOS and
+Linux, delete the binary and turn off "Start Cortex when I log in" in the panel
+first.
+
+## Build from source
 
 You need Go, at the version given in `go.mod`.
 
@@ -41,20 +118,23 @@ go build -o cortex ./cmd/cortex
 ```
 
 On Windows, build with `-ldflags "-H windowsgui"` so that starting Cortex at
-login or by double click opens no console window:
+login or by double click opens no console window (this is how releases are
+built; `scripts/release.sh VERSION OUTDIR` builds and packages all of them):
 
 ```
 go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
 ```
 
-Cortex then runs without a window and is stopped from the panel's "Quit Cortex"
-button. A program built this way does not make PowerShell or an interactive `cmd`
+Cortex then runs without a window and is stopped from the tray menu or the
+panel's "Quit Cortex" button. A program built this way does not make PowerShell or an interactive `cmd`
 prompt wait: `cortex.exe sync` typed there can return to the prompt at once,
 print its summary a moment later, and leave no exit status behind. To wait for
 it (in a script, say), use `Start-Process -Wait -NoNewWindow -PassThru .\cortex.exe -ArgumentList 'sync'`
 in PowerShell (the result's `ExitCode` is the status), or `start /wait cortex.exe sync` in `cmd`. `run` writes
 a log to `cortex.log` next to the config file (see Configuration; it is started
-over when it passes 1 MB).
+over when it passes 1 MB, and its first line says which version wrote it).
+
+## Run
 
 Running `cortex` with no arguments is the same as `cortex run`. It saves every
 conversation once, then checks again every 30 seconds, and opens the control
@@ -64,6 +144,7 @@ only accepts connections from your own machine. Options for `run`:
 - `-no-browser`: do not open the panel.
 - `-port N`: use another port.
 - `-no-autostart`: see below.
+- `-no-tray`: no notification-area icon (Windows).
 - `-config FILE`: use another config file.
 
 If Cortex is already running, starting it again just opens the panel. If the
@@ -79,6 +160,7 @@ The panel shows the last sync and any warnings, and lets you:
   chats");
 - turn projects on and off (conversations outside any project are always
   saved);
+- install Cortex on Windows (a banner at the top, until it is installed);
 - choose whether Cortex starts when you log in;
 - connect your AI tools to the vault (see "Let AI tools read the vault");
 - quit Cortex.
@@ -87,10 +169,13 @@ Turning something off stops capturing it. Notes already written are never
 deleted.
 
 The first time `run` starts (when there is no config file yet), it writes the
-default config and registers itself to start at login with `run -no-browser`:
-the registry's `Run` key on Windows, a launch agent in `~/Library/LaunchAgents`
-on macOS, an XDG autostart entry in `~/.config/autostart` on Linux. Pass
-`-no-autostart` to skip that, or turn it off in the panel at any time.
+default config and, on macOS and Linux, registers itself to start at login with
+`run -no-browser`: a launch agent in `~/Library/LaunchAgents` on macOS, an XDG
+autostart entry in `~/.config/autostart` on Linux. On Windows it registers
+nothing at that point unless it is already running from its installed place
+(see "Install"): installing writes the registry's `Run` key for the installed
+copy. Pass `-no-autostart` to skip the registration, or turn it on and off in
+the panel at any time.
 
 When Cortex runs on Windows, it also reads the sessions that Linux-side tools
 keep in the home directories of WSL distros that are running at that moment. It does not

@@ -24,11 +24,23 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test ./...
+      - name: Cross-build every release target without cgo
+        # The Windows-only files (tray, installer) are not compiled on this
+        # runner otherwise, and a cgo dependency would break the release.
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          for t in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            echo "$t"
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null ./cmd/cortex
+          done
+          GOOS=windows go vet ./...
       - name: Build
         if: matrix.os != 'windows-latest'
         run: go build -o dist/ ./cmd/cortex
       - name: Build (Windows, no console window)
         if: matrix.os == 'windows-latest'
+        env:
+          CGO_ENABLED: "0"
         run: go build -ldflags "-H windowsgui" -o dist/ ./cmd/cortex
       - uses: actions/upload-artifact@v4
         with:

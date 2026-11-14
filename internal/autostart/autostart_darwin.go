@@ -19,11 +19,18 @@ func plistPath() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", plistLabel+".plist"), nil
 }
 
+// Enable registers the running program.
 func Enable() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
+	return EnableFor(exe)
+}
+
+// EnableFor registers exe, for the installer, which sets up the installed copy
+// from another one.
+func EnableFor(exe string) error {
 	p, err := plistPath()
 	if err != nil {
 		return err

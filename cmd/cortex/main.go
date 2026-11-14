@@ -13,8 +13,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,16 +30,24 @@ import (
 	"github.com/marioolf/cortex/internal/collector/opencode"
 	"github.com/marioolf/cortex/internal/config"
 	"github.com/marioolf/cortex/internal/engine"
+	"github.com/marioolf/cortex/internal/install"
 	"github.com/marioolf/cortex/internal/mcp"
 	"github.com/marioolf/cortex/internal/panel"
+	"github.com/marioolf/cortex/internal/tray"
 )
 
 var version = "dev" // set at release time with -ldflags
 
 const usage = `Usage:
-  cortex [run] [-no-browser] [-no-autostart] [-port N] [-config FILE]
+  cortex [run] [-no-browser] [-no-autostart] [-no-tray] [-port N] [-config FILE]
                              run in the background with the control panel
                              (the default when no command is given)
+  cortex install [-port N] [-config FILE]
+                             Windows: copy Cortex to %LOCALAPPDATA%\Programs\Cortex,
+                             add a Start Menu shortcut and start at login, and start it
+  cortex uninstall [-purge] [-port N] [-config FILE]
+                             Windows: undo install; -purge also removes the config and log
+                             (the vault is never removed)
   cortex sync [-vault DIR] [-config FILE]
                              save all conversations found on this machine once
   cortex import FILE [-vault DIR] [-config FILE]
@@ -67,11 +78,18 @@ func main() {
 		err = importExport(args, os.Stdout, os.Stderr)
 	case "mcp":
 		err = serveMCP(args)
+	case "install":
+		err = installCmd(args, os.Stdout, os.Stderr, realInstallEnv)
+	case "uninstall":
+		err = uninstallCmd(args, os.Stdout, os.Stderr, realInstallEnv)
 	case "version":
 		fmt.Println(version)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0) // the flag set already printed its usage
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cortex:", err)
@@ -209,9 +227,11 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	noBrowser := fs.Bool("no-browser", false, "do not open the control panel in the browser")
 	noAutostart := fs.Bool("no-autostart", false, "on first run, do not register Cortex to start at login")
+	noTray := fs.Bool("no-tray", false, "do not show the notification-area icon (Windows)")
 	port := fs.Int("port", defaultPort, "port of the control panel on 127.0.0.1")
 	configPath := fs.String("config", "", "config file (default: the one in the OS config directory)")
 	fs.Parse(args)
+	explicitConfig := *configPath != ""
 
 	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
 	url := "http://" + addr + "/"
@@ -242,6 +262,18 @@ func run(args []string) error {
 	} else {
 		defer closeLog()
 	}
+	// First line of every run in the log, whatever else happens after it.
+	log.Printf("Cortex %s (%s/%s)", version, runtime.GOOS, runtime.GOARCH)
+
+	// Only Windows installs; elsewhere inst stays nil and nothing changes.
+	var inst *install.Installer
+	if install.Supported() {
+		if inst, err = newInstaller(*configPath, "", nil); err != nil {
+			log.Printf("install is not available: %v", err)
+		}
+	}
+	var handoff atomic.Bool // set when the installed copy must be started once we are gone
+
 	if _, err := os.Stat(*configPath); errors.Is(err, os.ErrNotExist) {
 		// First run: write the defaults so the file exists to be edited.
 		cfg, err := config.LoadFile(*configPath)
@@ -251,7 +283,12 @@ func run(args []string) error {
 		if err := cfg.Save(*configPath); err != nil {
 			return err
 		}
-		if !*noAutostart {
+		switch {
+		case *noAutostart:
+		case install.Supported() && (inst == nil || !inst.Installed()):
+			// Autostart must not point into Downloads: installing registers it.
+			log.Printf("not registering Cortex to start at login: it is not installed yet (use Install in the control panel)")
+		default:
 			if err := autostart.Enable(); err != nil {
 				log.Printf("could not register Cortex to start at login: %v", err)
 			} else {
@@ -264,7 +301,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("Cortex %s, vault %s", version, e.Snapshot().Vault)
+	log.Printf("vault %s", e.Snapshot().Vault)
 	if e.ExtensionToken() == "" {
 		// The browser extension's API stays closed until a pairing code exists.
 		code, err := config.NewToken()
@@ -283,7 +320,12 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// The sync loop and the HTTP server run in goroutines so that the main one
+	// is free for the tray, whose message loop wants a thread of its own.
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
+		defer wg.Done()
 		t := time.NewTicker(syncInterval)
 		defer t.Stop()
 		for {
@@ -298,11 +340,41 @@ func run(args []string) error {
 		}
 	}()
 
+	opt := panel.Options{Port: *port, Quit: stop}
+	if inst != nil {
+		opt.InstallState = func() panel.InstallState {
+			return panel.InstallState{Supported: true, Installed: inst.Installed(),
+				RunningFrom: filepath.Dir(inst.Exe), Target: inst.Target}
+		}
+		opt.Install = func() error {
+			// This process holds the port and is the Cortex to replace, so it
+			// does not ask anyone to quit; run starts the new copy once the
+			// port is free (see below).
+			if _, err := inst.Install(false); err != nil {
+				return err
+			}
+			log.Printf("installed to %s; handing over", inst.Target)
+			handoff.Store(true)
+			return nil
+		}
+	}
 	srv := &http.Server{
-		Handler:           panel.New(e, token, panel.Options{Port: *port, Quit: stop}),
+		Handler:           panel.New(e, token, opt),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	serveErr := make(chan error, 1)
 	go func() {
+		defer wg.Done()
+		err := srv.Serve(ln)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		serveErr <- err
+		stop() // a dead server is the end of Cortex, tray or not
+	}()
+	shutdown := make(chan struct{})
+	go func() {
+		defer close(shutdown)
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -315,8 +387,54 @@ func run(args []string) error {
 			log.Printf("could not open the browser: %v", err)
 		}
 	}
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+
+	// Tray: it blocks until ctx is done, so quitting from the menu, from the
+	// panel or by signal all end up here. If it cannot start, Cortex goes on
+	// without it.
+	if !*noTray {
+		t := tray.New(tray.Controls{
+			Open: func() {
+				if err := panel.Open(url); err != nil {
+					log.Printf("could not open the browser: %v", err)
+				}
+			},
+			Paused: func() bool { return e.Snapshot().Paused },
+			SetPaused: func(p bool) {
+				if err := e.Update(func(c *config.Config) { c.Paused = p }); err != nil {
+					log.Printf("could not change pause: %v", err)
+					return
+				}
+				go e.Sync() // as in the panel, so the effect shows at once
+			},
+			Quit: stop,
+		})
+		if err := t.Run(ctx); err != nil {
+			log.Printf("no notification-area icon: %v", err)
+		}
 	}
-	return nil
+	<-ctx.Done()
+	<-shutdown
+	wg.Wait()
+
+	if handoff.Load() && inst != nil {
+		// The port is free now. Without -no-browser the new copy opens the panel.
+		a := runArgs(*port, *configPath, explicitConfig, *noTray)
+		if err := inst.Sys.Start(inst.Target, a); err != nil {
+			log.Printf("could not start the installed copy %s: %v", inst.Target, err)
+		}
+	}
+	return <-serveErr
+}
+
+// runArgs is the command line that starts a copy of this run: the same port,
+// config and tray choice, and the browser opens (the user just clicked Install).
+func runArgs(port int, configPath string, explicitConfig, noTray bool) []string {
+	a := []string{"run", "-port", strconv.Itoa(port)}
+	if explicitConfig {
+		a = append(a, "-config", configPath)
+	}
+	if noTray {
+		a = append(a, "-no-tray")
+	}
+	return a
 }

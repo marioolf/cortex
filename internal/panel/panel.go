@@ -50,6 +50,10 @@ type Options struct {
 	GOOS         string                 // OS to build the command lines for; empty means runtime.GOOS
 	WSLAvailable func() bool            // whether WSL distros exist; nil asks wsl.exe
 
+	// For the install banner (Windows only; nil means not supported).
+	InstallState func() InstallState
+	Install      func() error // installs and arranges the hand-over; the panel then quits
+
 	// For importing exports.
 	MaxImport int64  // largest upload in bytes; 0 means 2 GiB
 	TempDir   string // where uploads are spooled; empty means the OS temp directory
@@ -68,8 +72,9 @@ type panel struct {
 	token string
 	opt   Options
 
-	connectMu sync.Mutex  // one edit of a client's config file at a time
-	importing atomic.Bool // one import at a time
+	connectMu  sync.Mutex  // one edit of a client's config file at a time
+	importing  atomic.Bool // one import at a time
+	installing atomic.Bool // one install at a time
 
 	mu        sync.Mutex
 	autostart bool
@@ -121,6 +126,8 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	mux.HandleFunc("GET "+routePing, p.extPing)
 	mux.HandleFunc("POST "+routeIngest, p.extIngest)
 	mux.HandleFunc("POST "+routeRegenerate, p.extRegenerate)
+	mux.HandleFunc("POST /api/install", p.install)
+	mux.HandleFunc("POST "+routeQuit, p.extQuit)
 	mux.HandleFunc("POST /api/quit", p.quit)
 	return p.guard(mux)
 }
@@ -203,8 +210,18 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 // connect AI tools.
 type stateJSON struct {
 	engine.State
-	MCP       mcpState `json:"mcp"`
-	Extension extState `json:"extension"`
+	MCP       mcpState     `json:"mcp"`
+	Extension extState     `json:"extension"`
+	Install   InstallState `json:"install"`
+}
+
+// InstallState tells the page whether to offer installing (see package install).
+// RunningFrom is the folder of the running program.
+type InstallState struct {
+	Supported   bool   `json:"supported"`
+	Installed   bool   `json:"installed"`
+	RunningFrom string `json:"running_from"`
+	Target      string `json:"target"`
 }
 
 // extState is what the page shows to pair the browser extension. The code is
@@ -234,7 +251,11 @@ type clientState struct {
 func (p *panel) snapshot() stateJSON {
 	s := p.e.Snapshot()
 	s.Autostart = p.autostartEnabled(false)
-	return stateJSON{s, p.mcpState(), extState{p.e.ExtensionToken(), p.opt.Port}}
+	var in InstallState
+	if p.opt.InstallState != nil {
+		in = p.opt.InstallState()
+	}
+	return stateJSON{s, p.mcpState(), extState{p.e.ExtensionToken(), p.opt.Port}, in}
 }
 
 func (p *panel) mcpState() mcpState {
@@ -419,6 +440,27 @@ func (p *panel) quit(w http.ResponseWriter, r *http.Request) {
 	go p.opt.Quit() // after the response is on its way
 }
 
+// install copies Cortex to its permanent place and hands over to that copy: the
+// response goes out, then the process quits and the installed copy starts (it
+// has a new panel token, so the page cannot go on talking to this one).
+func (p *panel) install(w http.ResponseWriter, r *http.Request) {
+	if p.opt.Install == nil || p.opt.Quit == nil {
+		jsonError(w, "not available", http.StatusNotImplemented)
+		return
+	}
+	if !p.installing.CompareAndSwap(false, true) {
+		jsonError(w, "an install is already in progress", http.StatusConflict)
+		return
+	}
+	if err := p.opt.Install(); err != nil {
+		p.installing.Store(false)
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	go p.opt.Quit()
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -440,6 +482,36 @@ func Running(url string, timeout time.Duration) bool {
 	}
 	resp.Body.Close()
 	return resp.Header.Get(Header) != ""
+}
+
+// QuitRunning asks the Cortex whose panel is at url to quit, proving itself with
+// the pairing code, and waits up to wait for it to stop answering. It does
+// nothing when nothing answers like Cortex there.
+func QuitRunning(url, code string, wait time.Duration) error {
+	if !Running(url, 2*time.Second) {
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodPost, url+strings.TrimPrefix(routeQuit, "/"), strings.NewReader("{}"))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(pairingHeader, code)
+	c := http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("could not ask the running Cortex at %s to quit: %w", url, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("a Cortex is running at %s and did not accept the request to quit (HTTP %d); quit it from its tray icon or panel and try again", url, resp.StatusCode)
+	}
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if !Running(url, time.Second) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the Cortex at %s is taking too long to quit; quit it from its tray icon or panel and try again", url)
 }
 
 // Open shows a folder or URL with the OS default handler.

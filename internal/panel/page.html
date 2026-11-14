@@ -83,11 +83,19 @@ h3 { margin: 14px 0 4px; font-size: 0.95rem; }
 input[type=file] { font: inherit; color: var(--text); flex: 1 1 14em; min-width: 0; max-width: 100%; }
 ol.steps { margin: 6px 0; padding-left: 1.3em; }
 #import-msg { min-height: 1.4em; overflow-wrap: anywhere; }
+.banner { margin: 0 0 16px; padding: 12px 14px; border-left: 4px solid var(--warn); }
+.banner p { margin: 0 0 8px; overflow-wrap: anywhere; }
+#install-msg { min-height: 1.4em; }
 @media (prefers-reduced-motion: reduce) { .track, .track::after { transition: none; } }
 </style>
 </head>
 <body>
 <main>
+  <div id="install-banner" class="card banner" hidden>
+    <p>Cortex is running from <strong id="install-from"></strong>. Install it so it keeps working if that file is moved or deleted.</p>
+    <button id="install-go" type="button" class="primary">Install</button>
+    <p id="install-msg" class="muted" role="status" aria-live="polite"></p>
+  </div>
   <header>
     <h1>Cortex</h1>
     <button id="pause" type="button" class="primary">Pause</button>
@@ -162,6 +170,7 @@ ol.steps { margin: 6px 0; padding-left: 1.3em; }
   <p class="muted">Turning something off stops capturing it. Notes already written are never deleted.</p>
 
   <p><button id="quit" type="button">Quit Cortex</button></p>
+  <p class="muted" id="version"></p>
 </main>
 <script nonce="{{NONCE}}">
 "use strict";
@@ -256,6 +265,10 @@ function render(s) {
   state = s;
   document.title = s.paused ? "Cortex (paused)" : "Cortex";
   $("pause").textContent = s.paused ? "Resume" : "Pause";
+  $("version").textContent = "Cortex " + s.version;
+  const inst = s.install || {};
+  $("install-banner").hidden = !(inst.supported && !inst.installed);
+  $("install-from").textContent = inst.running_from || "";
 
   let status = s.paused ? "Paused. Nothing is being captured." : "Running.";
   status += s.last_sync ? " Last sync: " + new Date(s.last_sync).toLocaleString() + "." : " Not synced yet.";
@@ -517,6 +530,20 @@ $("quit").addEventListener("click", async () => {
     $("quit").disabled = true;
     $("msg").textContent = "Cortex has stopped. Start it again to resume capturing.";
   } catch (e) { $("msg").textContent = e.message; }
+});
+
+$("install-go").addEventListener("click", async () => {
+  $("install-go").disabled = true;
+  $("install-msg").textContent = "Installing...";
+  try {
+    await call("/api/install", {});
+    stopped = true; // this process is handing over; its token is about to stop working
+    $("install-msg").textContent = "Installed in " + state.install.target + ". This panel will stop working: the installed copy of Cortex opens a new one in your browser in a moment. You can close this tab.";
+    $("install-go").hidden = true;
+  } catch (e) {
+    $("install-msg").textContent = "Could not install: " + e.message;
+    $("install-go").disabled = false;
+  }
 });
 
 load();

@@ -18,11 +18,18 @@ func desktopPath() (string, error) {
 	return filepath.Join(dir, "autostart", "cortex.desktop"), nil
 }
 
+// Enable registers the running program.
 func Enable() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
+	return EnableFor(exe)
+}
+
+// EnableFor registers exe, for the installer, which sets up the installed copy
+// from another one.
+func EnableFor(exe string) error {
 	p, err := desktopPath()
 	if err != nil {
 		return err

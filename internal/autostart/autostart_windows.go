@@ -14,11 +14,18 @@ func reg(args ...string) error {
 	return cmd.Run()
 }
 
+// Enable registers the running program.
 func Enable() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
+	return EnableFor(exe)
+}
+
+// EnableFor registers exe, for the installer, which sets up the installed copy
+// from another one.
+func EnableFor(exe string) error {
 	return reg(regArgs(exe)...)
 }
 
