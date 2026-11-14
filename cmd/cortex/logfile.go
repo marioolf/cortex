@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 const (
@@ -23,6 +24,16 @@ func logToFile(path string) (func(), error) {
 	// a console stderr is a handle that fails every write.
 	log.SetOutput(io.MultiWriter(f, os.Stderr))
 	return func() { log.SetOutput(os.Stderr); f.Close() }, nil
+}
+
+// setupLog makes the config folder (private, as everywhere else) and starts
+// logging to the file in it. The folder does not exist on the very first run,
+// and a log that could not be opened there would hide every start error.
+func setupLog(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	return logToFile(path)
 }
 
 func openLog(path string) (*os.File, error) {

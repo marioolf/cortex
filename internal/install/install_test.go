@@ -12,20 +12,24 @@ import (
 )
 
 type fakeSys struct {
-	calls     []string
-	quitErr   error
-	shortcut  string // path the shortcut would be written to
-	deleteErr error
+	shortcutErr, autostartErr error
+	calls                     []string
+	quitErr                   error
+	shortcut                  string // path the shortcut would be written to
+	deleteErr                 error
 }
 
 func (f *fakeSys) QuitRunning() error { f.calls = append(f.calls, "quit"); return f.quitErr }
 func (f *fakeSys) CreateShortcut(lnk, target string) error {
 	f.calls = append(f.calls, "shortcut "+lnk+" -> "+target)
+	if f.shortcutErr != nil {
+		return f.shortcutErr
+	}
 	return os.WriteFile(lnk, []byte("lnk"), 0o644) // the test's temp dir; stands in for the .lnk
 }
 func (f *fakeSys) EnableAutostart(exe string) error {
 	f.calls = append(f.calls, "autostart on "+exe)
-	return nil
+	return f.autostartErr
 }
 func (f *fakeSys) DisableAutostart() error { f.calls = append(f.calls, "autostart off"); return nil }
 func (f *fakeSys) Start(exe string, args []string) error {
@@ -432,7 +436,7 @@ func TestDeleteCommand(t *testing.T) {
 		if strings.Contains(line, "Users") {
 			t.Errorf("path in the command line: %s", line)
 		}
-		if !strings.HasPrefix(line, `cmd.exe /d /s /c "`) || !strings.HasSuffix(line, `"`) {
+		if !strings.HasPrefix(line, `cmd.exe /d /s /v:off /c "`) || !strings.HasSuffix(line, `"`) {
 			t.Errorf("line = %s", line)
 		}
 		if env[0] != "CORTEX_TARGET="+p || env[1] != "CORTEX_DIR="+filepath.Dir(p) {
@@ -444,5 +448,85 @@ func TestDeleteCommand(t *testing.T) {
 		if !strings.Contains(line, want) {
 			t.Errorf("line lacks %q", want)
 		}
+	}
+}
+
+func TestPurgeRemovesTheSummariesWorkFolder(t *testing.T) {
+	l := newLayout(t)
+	cfg := filepath.Dir(l.in.ConfigFile)
+	os.WriteFile(l.in.ConfigFile, []byte("{}"), 0o600)
+	work := filepath.Join(cfg, "summaries-work")
+	os.MkdirAll(filepath.Join(work, "sub"), 0o755)
+	os.WriteFile(filepath.Join(work, "sub", "session.jsonl"), []byte("x"), 0o600)
+	r, err := l.in.Uninstall(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(work); err == nil {
+		t.Error("summaries-work is still there")
+	}
+	if _, err := os.Stat(cfg); err == nil {
+		t.Errorf("config folder still there (report: %v)", r)
+	}
+	// Without -purge it stays.
+	l = newLayout(t)
+	work = filepath.Join(filepath.Dir(l.in.ConfigFile), "summaries-work")
+	os.MkdirAll(work, 0o755)
+	if _, err := l.in.Uninstall(false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(work); err != nil {
+		t.Error("removed without -purge")
+	}
+}
+
+func TestPurgeRemovesOnlyTheLinkWhenTheWorkFolderIsASymlink(t *testing.T) {
+	l := newLayout(t)
+	cfg := filepath.Dir(l.in.ConfigFile)
+	elsewhere := filepath.Join(l.root, "precious")
+	os.MkdirAll(elsewhere, 0o755)
+	keep := filepath.Join(elsewhere, "keep.txt")
+	os.WriteFile(keep, []byte("mine"), 0o644)
+	if err := os.Symlink(elsewhere, filepath.Join(cfg, "summaries-work")); err != nil {
+		t.Skip("symlinks are not available:", err)
+	}
+	if _, err := l.in.Uninstall(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(cfg, "summaries-work")); err == nil {
+		t.Error("the link is still there")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("the target of the link was touched: %v", err)
+	}
+}
+
+func TestInstallContinuesAfterAFailedStepAndSaysWhatWasCopied(t *testing.T) {
+	l := newLayout(t)
+	l.sys.shortcutErr = errors.New("powershell blew up")
+	copied, err := l.in.Install(true)
+	if !copied {
+		t.Fatal("copied = false")
+	}
+	if got := strings.Join(l.sys.calls, "|"); !strings.Contains(got, "autostart on "+l.in.Target) {
+		t.Errorf("autostart was skipped after the shortcut failed: %s", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "WAS copied to "+l.in.Target) ||
+		!strings.Contains(err.Error(), "Start Menu shortcut") || !strings.Contains(err.Error(), "powershell blew up") {
+		t.Errorf("err = %v", err)
+	}
+	// Both steps failing are both reported.
+	l = newLayout(t)
+	l.sys.shortcutErr, l.sys.autostartErr = errors.New("e1"), errors.New("e2")
+	_, err = l.in.Install(true)
+	if err == nil || !strings.Contains(err.Error(), "e1") || !strings.Contains(err.Error(), "e2") || !strings.Contains(err.Error(), "start at login") {
+		t.Errorf("err = %v", err)
+	}
+	// A failed copy stops everything and does not claim to have copied.
+	l = newLayout(t)
+	l.sys.quitErr = errors.New("cannot quit")
+	copied, err = l.in.Install(true)
+	if copied || err == nil || strings.Contains(err.Error(), "WAS copied") {
+		t.Errorf("copied=%v err=%v", copied, err)
 	}
 }

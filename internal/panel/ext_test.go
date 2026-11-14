@@ -50,7 +50,7 @@ func conv(extra string) string {
 func TestExtPing(t *testing.T) {
 	en := setup(t)
 	en.eng.Version = "9.9"
-	if w := en.ext("GET", "/api/ext/ping", pairing, extOrigin, ""); w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"ok":true,"version":"9.9"}` {
+	if w := en.ext("GET", "/api/ext/ping", pairing, extOrigin, ""); w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"exe":"C:\\Apps\\Cortex\\cortex.exe","ok":true,"version":"9.9"}` {
 		t.Errorf("right code: %d %s", w.Code, w.Body)
 	}
 	for name, code := range map[string]string{"none": "", "wrong": "nope", "prefix": pairing[:10], "longer": pairing + "x"} {

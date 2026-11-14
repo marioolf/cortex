@@ -85,6 +85,7 @@ ol.steps { margin: 6px 0; padding-left: 1.3em; }
 #import-msg { min-height: 1.4em; overflow-wrap: anywhere; }
 .banner { margin: 0 0 16px; padding: 12px 14px; border-left: 4px solid var(--warn); }
 .banner p { margin: 0 0 8px; overflow-wrap: anywhere; }
+#warnings ul li { padding: 2px 0; display: list-item; list-style: disc; margin-left: 1.2em; overflow-wrap: anywhere; }
 #install-msg { min-height: 1.4em; }
 select {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
@@ -96,6 +97,10 @@ select {
 </head>
 <body>
 <main>
+  <div id="warnings" class="card banner" role="alert" hidden>
+    <p><strong>Cortex found a problem with its settings</strong></p>
+    <ul id="warnings-list"></ul>
+  </div>
   <div id="install-banner" class="card banner" hidden>
     <p>Cortex is running from <strong id="install-from"></strong>. Install it so it keeps working if that file is moved or deleted.</p>
     <button id="install-go" type="button" class="primary">Install</button>
@@ -134,11 +139,14 @@ select {
       <span class="name">Start Cortex when I log in</span>
       <span class="switch"><input id="autostart" type="checkbox" role="switch"><span class="track"></span></span>
     </label>
+    <p class="muted" id="autostart-hint" hidden></p>
   </div>
 
   <h2>Summaries (optional)</h2>
   <p class="muted" id="sum-intro"></p>
   <div class="card box">
+    <p id="sum-problem" class="warn" hidden>Summaries are switched off because the summaries settings in the config file are not valid. The problem is described in the warning at the top of this page. Fix the config file and restart Cortex (or change any other setting here); this section comes back then.</p>
+    <div id="sum-controls">
     <label class="row" id="sum-enabled-row">
       <span class="name">Summarise conversations of the selected projects</span>
       <span class="switch"><input id="sum-enabled" type="checkbox" role="switch"><span class="track"></span></span>
@@ -153,6 +161,7 @@ select {
     <h3 id="sum-projects-title">Projects to summarise</h3>
     <p class="muted">Chats without a project are never summarised.</p>
     <ul id="sum-projects" class="card" aria-labelledby="sum-projects-title"></ul>
+    </div>
     <p id="sum-status" class="muted" role="status" aria-live="polite"></p>
   </div>
 
@@ -303,6 +312,10 @@ function render(s) {
     ? "Last round: " + r.created + " created, " + r.updated + " updated, " + r.unchanged + " unchanged" + (r.detached ? ", " + r.detached + " left alone" : "") + "."
     : "";
 
+  const warns = s.warnings || [];
+  $("warnings").hidden = warns.length === 0;
+  $("warnings-list").replaceChildren(...warns.map((w) => { const li = document.createElement("li"); li.textContent = w; return li; }));
+
   const errs = s.errors || [];
   $("errors").hidden = errs.length === 0;
   $("errors-summary").textContent = plural(errs.length, "warning", "warnings") + " (most recent)";
@@ -337,6 +350,11 @@ function render(s) {
 
   renderSummaries(s);
   $("autostart").checked = s.autostart;
+  // A copy that is not the installed one must not register itself for login.
+  const notInstalled = !!(s.install && s.install.supported && !s.install.installed);
+  $("autostart").disabled = notInstalled;
+  $("autostart-hint").hidden = !notInstalled;
+  $("autostart-hint").textContent = notInstalled ? "Install Cortex first" : "";
   $("ext-code").value = s.extension.code || "";
   $("ext-port").textContent = "Port: " + s.extension.port + (s.extension.code ? "" : " (no pairing code yet; restart Cortex)");
   renderConnect(s);
@@ -345,6 +363,10 @@ function render(s) {
 // ---- Summaries ----
 function renderSummaries(s) {
   const m = s.summaries;
+  $("sum-problem").hidden = !m.invalid;
+  $("sum-controls").hidden = !!m.invalid;
+  $("sum-intro").hidden = !!m.invalid;
+  if (m.invalid) { $("sum-status").textContent = ""; return; }
   $("sum-intro").textContent = "When a conversation in a selected project has been quiet for " + plural(m.idle_minutes, "minute", "minutes") +
     ", Cortex sends its saved text to the tool below, on this computer, and stores the answer at the top of the note. " +
     "That tool sends the text to its AI provider and uses your account and quota. Off by default.";

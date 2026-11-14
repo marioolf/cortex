@@ -16,6 +16,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/marioolf/cortex/internal/config"
 )
 
 const (
@@ -77,6 +80,9 @@ func Resolve(tool string, command []string) (argv []string, name string, err err
 		if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
 			return nil, "", errors.New("the custom tool has no command in the config file")
 		}
+		if err := config.CheckCommand(command); err != nil {
+			return nil, "", err
+		}
 		return command, "a custom command", nil
 	}
 	p, ok := PresetByID(tool)
@@ -97,10 +103,33 @@ func WorkDir(configPath string) string {
 	return filepath.Join(dir, workDirName)
 }
 
+// resolve follows symlinks in p. When p does not exist yet, the nearest
+// existing ancestor is resolved and the rest appended; when nothing resolves,
+// p is returned unchanged.
+func resolve(p string) string {
+	if p == "" {
+		return p
+	}
+	rest := ""
+	for q := p; ; {
+		if r, err := filepath.EvalSymlinks(q); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(q)
+		if parent == q {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(q), rest)
+		q = parent
+	}
+}
+
 // InWorkDir reports whether cwd is the work folder or inside it. The tools
 // keep their own sessions on disk, and those must never be saved as
 // conversations (see engine). Paths are compared cleaned, ignoring case on
-// Windows, and both separators count.
+// Windows, and both separators count. The folder may sit behind a symlink and
+// a tool may report either spelling, so cwd counts if it matches the folder
+// as given or with symlinks resolved, and the same for cwd itself.
 func InWorkDir(cwd, work string) bool {
 	norm := func(p string) string {
 		p = filepath.Clean(strings.ReplaceAll(p, `\`, "/"))
@@ -113,8 +142,15 @@ func InWorkDir(cwd, work string) bool {
 	if cwd == "" || work == "" {
 		return false
 	}
-	c, w := norm(cwd), norm(work)
-	return c == w || strings.HasPrefix(c, w+"/")
+	works := []string{norm(work), norm(resolve(work))}
+	for _, c := range []string{norm(cwd), norm(resolve(cwd))} {
+		for _, w := range works {
+			if c == w || strings.HasPrefix(c, w+"/") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 const (
@@ -160,10 +196,26 @@ func capText(s string, max int) string {
 
 var markerText = regexp.MustCompile(`<!--\s*cortex:`)
 
-// Clean checks and normalises the command's output: trimmed, no Cortex marker
-// text (it could break the note), at most MaxSummary characters. Empty output
-// is an error.
+// ansi matches terminal escape sequences: CSI (colours, cursor), OSC (titles,
+// links; ended by BEL or ST) and two-character escapes.
+var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-Z\\-_]`)
+
+// Clean checks and normalises the command's output: valid UTF-8, no escape
+// sequences and no control characters other than newline and tab, trimmed, no
+// Cortex marker text (it could break the note), at most MaxSummary characters.
+// Empty output is an error.
 func Clean(out string) (string, error) {
+	out = strings.ToValidUTF8(out, "\uFFFD")
+	out = ansi.ReplaceAllString(out, "")
+	out = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			return r
+		}
+		if unicode.IsControl(r) { // C0, DEL and C1
+			return -1
+		}
+		return r
+	}, out)
 	for markerText.MatchString(out) { // loop: removing one may join the pieces of another
 		out = markerText.ReplaceAllString(out, "")
 	}
@@ -192,6 +244,8 @@ func (r Runner) Run(ctx context.Context, argv []string, prompt string) (string, 
 	if err := os.MkdirAll(r.Dir, 0o700); err != nil {
 		return "", err
 	}
+	// The folder may be behind a symlink: run in, and say we are in, the real one.
+	dir := resolve(r.Dir)
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = Timeout
@@ -200,16 +254,19 @@ func (r Runner) Run(ctx context.Context, argv []string, prompt string) (string, 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Dir = r.Dir
-	cmd.Env = append(os.Environ(), "CORTEX_SUMMARY=1")
+	cmd.Dir = dir
+	// Go does not update PWD when Env is set, and tools that trust it would
+	// report the folder Cortex was started in.
+	cmd.Env = append(os.Environ(), "CORTEX_SUMMARY=1", "PWD="+dir)
 	cmd.Stdin = strings.NewReader(prompt)
 	out := &capped{max: MaxStdout, cancel: cancel}
 	errb := &capped{max: MaxStderr}
 	cmd.Stdout, cmd.Stderr = out, errb
 	cmd.WaitDelay = 2 * time.Second // a child that keeps the pipes open must not hang us
-	hideWindow(cmd)
+	setupProc(cmd)
 
 	err := cmd.Run()
+	afterRun(cmd) // helpers a finished command left behind
 	switch {
 	case out.over:
 		return "", fmt.Errorf("the command printed more than %d KB", MaxStdout>>10)
@@ -218,13 +275,42 @@ func (r Runner) Run(ctx context.Context, argv []string, prompt string) (string, 
 	case ctx.Err() != nil:
 		return "", ctx.Err()
 	case err != nil:
-		msg := err.Error()
-		if ex := excerpt(errb.buf.String()); ex != "" {
-			msg += ": " + ex
-		}
-		return "", fmt.Errorf("%s: %s", filepath.Base(argv[0]), msg)
+		return "", &RunError{Program: filepath.Base(argv[0]), Err: err, Stderr: errb.buf.String()}
 	}
 	return out.buf.String(), nil
+}
+
+// RunError is a command that failed. Error() carries a short excerpt of its
+// stderr for the person running `cortex summarize`; Stderr is there for
+// callers that want to shorten or redact it themselves.
+type RunError struct {
+	Program string
+	Err     error
+	Stderr  string
+}
+
+func (e *RunError) Error() string {
+	msg := e.Err.Error()
+	if ex := excerpt(e.Stderr); ex != "" {
+		msg += ": " + ex
+	}
+	return e.Program + ": " + msg
+}
+
+func (e *RunError) Unwrap() error { return e.Err }
+
+// FirstLine is the first non-empty line of the command's stderr, cut to max
+// characters.
+func (e *RunError) FirstLine(max int) string {
+	for _, l := range strings.Split(e.Stderr, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			if r := []rune(l); len(r) > max {
+				l = string(r[:max])
+			}
+			return l
+		}
+	}
+	return ""
 }
 
 // excerpt is the first part of stderr on one line.

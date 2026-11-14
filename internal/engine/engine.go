@@ -63,6 +63,9 @@ type State struct {
 	Projects   []ProjectState `json:"projects"`
 	Chats      int            `json:"chats"` // sessions that belong to no project
 	Summaries  SummaryState   `json:"summaries"`
+	// Warnings are problems with the config file that did not stop Cortex
+	// (an unusable summaries block); the panel shows them at the top.
+	Warnings []string `json:"warnings"`
 }
 
 type seenSession struct{ source, project string }
@@ -370,6 +373,7 @@ func clone(c *config.Config) *config.Config {
 	n.RedactPatterns = slices.Clone(c.RedactPatterns)
 	n.Summaries.Command = slices.Clone(c.Summaries.Command)
 	n.Summaries.Projects = slices.Clone(c.Summaries.Projects)
+	n.Warnings = slices.Clone(c.Warnings)
 	return &n
 }
 
@@ -385,6 +389,7 @@ func (e *Engine) Snapshot() State {
 		Errors:     slices.Clone(e.errs),
 		Sources:    []SourceState{},
 		Projects:   []ProjectState{},
+		Warnings:   append([]string{}, e.cfg.Warnings...),
 	}
 	// Summary failures outlive the round that clears e.errs.
 	e.sum.mu.Lock()

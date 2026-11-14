@@ -48,7 +48,8 @@ func shortcutCommand(lnk, target string) (name string, args, env []string) {
 // deleteScript is the cmd.exe line that waits for the program to be deletable
 // and then removes it and its folder. It tries once a second for a minute (ping
 // is the usual sleep in a batch line). %VAR% inside double quotes is literal
-// whatever the path holds, and a Windows path cannot contain a double quote,
+// whatever the path holds (/v:off keeps delayed expansion off, so !VAR! in a
+// path can never expand either), and a Windows path cannot contain a double quote,
 // which deleteCommand checks anyway.
 const deleteScript = `for /l %i in (1,1,60) do (` +
 	`ping -n 2 127.0.0.1 >nul & ` +
@@ -63,6 +64,6 @@ func deleteCommand(target string) (cmdLine string, env []string, err error) {
 	if strings.ContainsAny(target+dir, "\"\r\n\x00") {
 		return "", nil, errors.New("the path contains characters that cannot be handled safely")
 	}
-	return `cmd.exe /d /s /c "` + deleteScript + `"`,
+	return `cmd.exe /d /s /v:off /c "` + deleteScript + `"`,
 		[]string{envTarget + "=" + target, envDir + "=" + dir}, nil
 }

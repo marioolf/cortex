@@ -1,10 +1,12 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -113,24 +115,36 @@ func TestExtQuitNeedsPairingCode(t *testing.T) {
 }
 
 // serve runs a panel on a free port the way run does and returns its URL.
-func serve(t *testing.T, quit func()) (url string, stop func()) {
+// quit is what the panel's Quit does; it gets stop, which shuts the server down
+// gracefully as run does, so a response in flight is still delivered.
+func serve(t *testing.T, quit func(stop func())) (url string, stop func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	en := setupWith(t, nil, func(o *Options) { o.Port = port; o.Quit = quit })
+	var srvp atomic.Pointer[http.Server]
+	stop = func() {
+		if s := srvp.Load(); s != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.Shutdown(ctx)
+		}
+	}
+	en := setupWith(t, nil, func(o *Options) {
+		o.Port = port
+		o.Quit = func() { quit(stop) }
+	})
 	srv := &http.Server{Handler: en.h}
+	srvp.Store(srv)
 	go srv.Serve(ln)
-	return "http://127.0.0.1:" + strconv.Itoa(port) + "/", func() { srv.Close() }
+	t.Cleanup(func() { srv.Close() })
+	return "http://127.0.0.1:" + strconv.Itoa(port) + "/", stop
 }
 
 func TestQuitRunning(t *testing.T) {
-	var stop func()
-	var url string
-	url, stop = serve(t, func() { stop() })
-	defer stop()
+	url, _ := serve(t, func(stop func()) { stop() })
 	if err := QuitRunning(url, pairing, 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +154,7 @@ func TestQuitRunning(t *testing.T) {
 }
 
 func TestQuitRunningWrongCode(t *testing.T) {
-	url, stop := serve(t, func() { t.Error("quit called") })
-	defer stop()
+	url, _ := serve(t, func(func()) { t.Error("quit called") })
 	err := QuitRunning(url, "wrong", time.Second)
 	if err == nil || !strings.Contains(err.Error(), "did not accept") {
 		t.Errorf("err = %v", err)
@@ -168,4 +181,26 @@ func TestQuitRunningOtherProgram(t *testing.T) {
 	go srv.Serve(ln)
 	defer srv.Close()
 	_ = QuitRunning("http://"+ln.Addr().String()+"/", "x", time.Second)
+}
+
+func TestRunningExe(t *testing.T) {
+	url, _ := serve(t, func(func()) {})
+	exe, err := RunningExe(url, pairing, 2*time.Second)
+	if err != nil || exe != `C:\Apps\Cortex\cortex.exe` {
+		t.Errorf("exe = %q, err = %v", exe, err)
+	}
+	for _, code := range []string{"", "wrong"} {
+		if exe, err := RunningExe(url, code, 2*time.Second); err == nil || exe != "" {
+			t.Errorf("code %q: exe = %q, err = %v", code, exe, err)
+		}
+	}
+	// An older Cortex answers without exe.
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(Header, "1")
+		w.Write([]byte(`{"ok":true,"version":"0.9"}`))
+	}))
+	defer old.Close()
+	if _, err := RunningExe(old.URL+"/", pairing, 2*time.Second); err == nil {
+		t.Error("an answer without exe was accepted")
+	}
 }

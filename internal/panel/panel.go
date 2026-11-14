@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os/exec"
@@ -364,6 +365,10 @@ func (p *panel) checkSummaries(r *summariesRequest) error {
 	return nil
 }
 
+// errInstallFirst is what the autostart switch answers on a copy that is not
+// the installed one: the entry would point into Downloads.
+const errInstallFirst = "Install Cortex first"
+
 func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 	var req configRequest
 	dec := json.NewDecoder(r.Body)
@@ -390,7 +395,17 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Autostart != nil && *req.Autostart && p.opt.InstallState != nil {
+		if in := p.opt.InstallState(); in.Supported && !in.Installed {
+			jsonError(w, errInstallFirst, http.StatusConflict)
+			return
+		}
+	}
 	if req.Summaries != nil {
+		if p.e.Snapshot().Summaries.Invalid {
+			jsonError(w, "the summaries settings in the config file are not valid; fix the file first (see the warning at the top of the page)", http.StatusConflict)
+			return
+		}
 		if err := p.checkSummaries(req.Summaries); err != nil {
 			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
@@ -547,6 +562,37 @@ func Running(url string, timeout time.Duration) bool {
 	}
 	resp.Body.Close()
 	return resp.Header.Get(Header) != ""
+}
+
+// RunningExe asks the Cortex whose panel is at url which program file it runs
+// from, proving itself with the pairing code. It fails when the answer is not
+// a Cortex's, the code is wrong or missing, or the Cortex is older than this
+// field; the caller must then treat the running Cortex as unknown.
+func RunningExe(url, code string, timeout time.Duration) (string, error) {
+	req, err := http.NewRequest(http.MethodGet, url+strings.TrimPrefix(routePing, "/"), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set(pairingHeader, code)
+	c := http.Client{Timeout: timeout}
+	resp, err := c.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("it did not accept the pairing code (HTTP %d)", resp.StatusCode)
+	}
+	var ping struct {
+		Exe string `json:"exe"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ping); err != nil {
+		return "", fmt.Errorf("unexpected answer: %w", err)
+	}
+	if ping.Exe == "" {
+		return "", errors.New("it does not say where it runs from (an older version)")
+	}
+	return ping.Exe, nil
 }
 
 // QuitRunning asks the Cortex whose panel is at url to quit, proving itself with

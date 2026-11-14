@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/marioolf/cortex/internal/config"
 	"github.com/marioolf/cortex/internal/session"
 	"github.com/marioolf/cortex/internal/summarize"
+	"github.com/marioolf/cortex/internal/vault"
 )
 
 // TestHelperSummariser is the fake summariser: the test binary running itself
@@ -38,6 +41,19 @@ func TestHelperSummariser(t *testing.T) {
 	case "fail":
 		fmt.Fprint(os.Stderr, "boom: not logged in")
 		os.Exit(3)
+	case "secret":
+		fmt.Print("Deployed with sk-abcdefghijklmnopqrstuvwx1234 and password=hunter2hunter2 and ACME-12345678.")
+	case "failmulti":
+		fmt.Fprint(os.Stderr, "auth failed for key sk-abcdefghijklmnopqrstuvwx1234 "+strings.Repeat("x", 300)+"\nSECOND-LINE-CONVERSATION-TEXT\n")
+		os.Exit(3)
+	case "sleep":
+		time.Sleep(time.Minute)
+	case "grandchild":
+		c := exec.Command(os.Args[0], "-test.run=TestHelperSummariser")
+		c.Env = append(os.Environ(), "CORTEX_FAKE_MODE=sleep")
+		c.Start()
+		os.WriteFile(os.Getenv("CORTEX_FAKE_PIDFILE"), []byte(strconv.Itoa(c.Process.Pid)), 0o600)
+		time.Sleep(time.Minute)
 	case "block":
 		os.WriteFile(os.Getenv("CORTEX_FAKE_STARTED"), nil, 0o600)
 		for i := 0; i < 1000; i++ {
@@ -346,7 +362,8 @@ func TestSummaryFailureBackoffEndsWithNewContent(t *testing.T) {
 }
 
 func TestSummaryRunsOutsideTheRoundLock(t *testing.T) {
-	s := setupSummaries(t, "block", []session.Session{conv("a1", "/work/alpha", 4), conv("z9", "/work/zeta", 4)}, nil)
+	s := setupSummaries(t, "block", []session.Session{conv("a1", "/work/alpha", 4), conv("z9", "/work/zeta", 4)},
+		func(c *config.Config) { c.Summaries.Projects = []string{"alpha", "zeta"} })
 	s.round()
 	s.clk.Add(20 * time.Minute)
 	s.e.Sync() // starts the worker, which blocks in the fake
@@ -368,10 +385,14 @@ func TestSummaryRunsOutsideTheRoundLock(t *testing.T) {
 	}
 	os.WriteFile(s.release, nil, 0o600)
 	s.e.sumWG.Wait()
-	for _, n := range notes(t, s.vault) {
-		b, _ := os.ReadFile(n)
-		if strings.Contains(n, "a1") != strings.Contains(string(b), "Blocked summary.") {
-			t.Errorf("%s: summary present = %v", n, !strings.Contains(n, "a1"))
+	// Both conversations got their summary, whatever the temp path looks like.
+	got := notes(t, s.vault)
+	if len(got) != 2 {
+		t.Fatalf("notes = %v", got)
+	}
+	for _, n := range got {
+		if b, _ := os.ReadFile(n); !strings.Contains(string(b), "Blocked summary.") {
+			t.Errorf("%s has no summary", filepath.Base(n))
 		}
 	}
 }
@@ -519,5 +540,179 @@ func TestSummarizeNote(t *testing.T) {
 	s.e.Update(func(c *config.Config) { c.Summaries.Tool = "" })
 	if _, err := s.e.SummarizeNote(path); err == nil || !strings.Contains(err.Error(), "no usable summary tool") {
 		t.Errorf("without a tool: %v", err)
+	}
+}
+
+// A slow tool must see each conversation once, however many rounds pass while it runs.
+func TestSlowSummaryIsNotQueuedAgainWhileRunning(t *testing.T) {
+	s := setupSummaries(t, "block", []session.Session{conv("a1", "/work/alpha", 4)}, nil)
+	s.round()
+	s.clk.Add(20 * time.Minute)
+	s.e.Sync()
+	waitFor(t, s.started)
+	for i := 0; i < 4; i++ { // several rounds, the clock moving, the tool still blocked
+		s.clk.Add(20 * time.Minute)
+		s.e.Sync()
+	}
+	if st := s.e.Snapshot().Summaries; st.Queued != 1 {
+		t.Errorf("queued = %d: the running one is the only one", st.Queued)
+	}
+	os.WriteFile(s.release, nil, 0o600)
+	s.e.sumWG.Wait()
+	s.clk.Add(20 * time.Minute)
+	s.round()
+	s.round()
+	if s.runs() != 1 {
+		t.Fatalf("invocations = %d, want 1", s.runs())
+	}
+	if !strings.Contains(s.note(t), "Blocked summary.") {
+		t.Error("no summary written")
+	}
+}
+
+// A tool that times out is left alone for the hour, also when rounds went by during the run.
+func TestSlowSummaryTimeoutIsBackedOff(t *testing.T) {
+	s := setupSummaries(t, "block", []session.Session{conv("a1", "/work/alpha", 4)}, nil)
+	s.e.runner.Timeout = 600 * time.Millisecond
+	s.round()
+	s.clk.Add(20 * time.Minute)
+	s.e.Sync()
+	waitFor(t, s.started)
+	s.clk.Add(20 * time.Minute)
+	s.e.Sync() // while it runs
+	s.e.sumWG.Wait()
+	if s.runs() != 1 {
+		t.Fatalf("invocations = %d after the timeout", s.runs())
+	}
+	if e := s.e.Snapshot().Summaries.LastError; !strings.Contains(e, "did not finish") {
+		t.Fatalf("last error = %q", e)
+	}
+	for i := 0; i < 5; i++ { // up to 50 minutes after the failure
+		s.clk.Add(10 * time.Minute)
+		s.round()
+	}
+	if s.runs() != 1 {
+		t.Fatalf("invocations = %d inside the hour", s.runs())
+	}
+	s.clk.Add(15 * time.Minute)
+	s.round()
+	if s.runs() != 2 {
+		t.Errorf("invocations = %d after the hour", s.runs())
+	}
+}
+
+// The worker itself must not start something that was summarised or is in backoff,
+// whatever the queue says.
+func TestWorkerChecksSummaryAndBackoffBeforeRunning(t *testing.T) {
+	s := setupSummaries(t, "ok", []session.Session{conv("a1", "/work/alpha", 4)}, nil)
+	s.round()
+	s.clk.Add(20 * time.Minute)
+	s.round() // summarised once
+	if s.runs() != 1 {
+		t.Fatalf("runs = %d", s.runs())
+	}
+	key := vaultKeyOf(s.f.sessions[0])
+	_, hash, _ := s.e.v.ConversationText(key)
+	s.e.sum.mu.Lock()
+	s.e.sum.queue = append(s.e.sum.queue, queued{key, hash})
+	s.e.sum.running = true
+	s.e.sumWG.Add(1)
+	s.e.sum.mu.Unlock()
+	s.e.summaryWorker()
+	if s.runs() != 1 {
+		t.Errorf("a summarised conversation was run again: %d", s.runs())
+	}
+	if n := len(s.e.sum.starts); n != 1 {
+		t.Errorf("a skipped item counted against the rate limit: %d starts", n)
+	}
+	// Backoff: a failure for this hash blocks the queued item too.
+	s.e.sum.mu.Lock()
+	s.e.sum.failed = map[vault.Key]failure{key: {hash, s.clk.Now()}}
+	s.e.sum.mu.Unlock()
+	s.e.v.WriteSummary(key, "other", "x", "old") // make the stored summary not match
+	s.e.sum.mu.Lock()
+	s.e.sum.queue = append(s.e.sum.queue, queued{key, hash})
+	s.e.sum.running = true
+	s.e.sumWG.Add(1)
+	s.e.sum.mu.Unlock()
+	s.e.summaryWorker()
+	if s.runs() != 1 {
+		t.Errorf("an item in backoff was run: %d", s.runs())
+	}
+}
+
+func vaultKeyOf(x session.Session) vault.Key { return vault.KeyOf(&x) }
+
+func TestSummaryTextIsRedacted(t *testing.T) {
+	s := setupSummaries(t, "secret", []session.Session{conv("a1", "/work/alpha", 4)}, nil)
+	s.e.Update(func(c *config.Config) { c.RedactPatterns = []string{`ACME-[0-9]{8}`} })
+	s.round()
+	s.clk.Add(20 * time.Minute)
+	s.round()
+	n := s.note(t)
+	if !strings.Contains(n, "## Summary") || !strings.Contains(n, "[REDACTED]") {
+		t.Fatalf("no redacted summary:\n%s", n)
+	}
+	for _, leak := range []string{"sk-abcdefghijklmnopqrstuvwx1234", "hunter2hunter2", "ACME-12345678"} {
+		if strings.Contains(n, leak) {
+			t.Errorf("summary leaks %q", leak)
+		}
+	}
+}
+
+func TestSummaryFailureMessageHoldsNoConversationText(t *testing.T) {
+	c := conv("session-abcdef-123456", "/work/alpha", 4)
+	c.Title = "Private plans for the merger"
+	s := setupSummaries(t, "failmulti", []session.Session{c}, nil)
+	s.round()
+	s.clk.Add(20 * time.Minute)
+	s.round()
+	msg := s.e.Snapshot().Summaries.LastError
+	if !strings.Contains(msg, "fake session session-") {
+		t.Errorf("message does not name source and id start: %q", msg)
+	}
+	for _, bad := range []string{"merger", "Private", "abcdef-123456", "SECOND-LINE", "sk-abcdefghijklmnopqrstuvwx1234", ".md"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("message contains %q: %q", bad, msg)
+		}
+	}
+	if !strings.Contains(msg, "auth failed") || !strings.Contains(msg, "[REDACTED]") {
+		t.Errorf("stderr first line missing or not redacted: %q", msg)
+	}
+	if n := len([]rune(msg)); n > 400 {
+		t.Errorf("message has %d characters", n)
+	}
+}
+
+func TestInvalidSummariesConfigStartsWithAWarning(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	os.WriteFile(cfgPath, []byte(`{"vault":`+strconv.Quote(filepath.Join(dir, "v"))+`,"summaries":{"enabled":true,"tool":"bogus"}}`), 0o600)
+	e, err := New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+	st := e.Snapshot()
+	if len(st.Warnings) != 1 || !strings.Contains(st.Warnings[0], "bogus") || st.Summaries.Enabled || !st.Summaries.Invalid {
+		t.Errorf("state = %+v", st)
+	}
+	e.Sync() // still works
+	// A change from the panel keeps the user's block in the file.
+	if err := e.Update(func(c *config.Config) { c.Paused = true }); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(b), `"bogus"`) {
+		t.Errorf("the summaries block was lost:\n%s", b)
+	}
+	// Once the file is fixed, the next change clears the warning.
+	os.WriteFile(cfgPath, []byte(`{"vault":`+strconv.Quote(filepath.Join(dir, "v"))+`}`), 0o600)
+	e.Update(func(c *config.Config) { c.Paused = false })
+	if w := e.Snapshot().Warnings; len(w) != 0 {
+		t.Errorf("warnings = %v", w)
+	}
+	if e.Snapshot().Warnings == nil {
+		t.Error("warnings must be an empty list, not null")
 	}
 }

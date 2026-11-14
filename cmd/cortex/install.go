@@ -24,14 +24,26 @@ type installEnv struct {
 }
 
 var realInstallEnv = installEnv{goos: runtime.GOOS, new: func(configPath string, port int) (*install.Installer, error) {
-	cfg, err := config.LoadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+	// Only the pairing code and the vault are needed, and a damaged config must
+	// not stop anyone from uninstalling: whatever cannot be read is reported
+	// and skipped.
+	token, vault, problem := config.Pairing(configPath)
+	if problem != nil {
+		fmt.Fprintf(os.Stderr, "cortex: warning: %v; going on without the pairing code (a running Cortex may have to be quit by hand)\n", problem)
+	} else if cfg, err := config.LoadFile(configPath); err == nil {
+		for _, w := range cfg.Warnings {
+			fmt.Fprintln(os.Stderr, "cortex: warning:", w)
+		}
+	}
+	if vault == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			vault = filepath.Join(home, "Cortex")
+		}
 	}
 	url := "http://" + panelAddr(port) + "/"
 	// A running Cortex is asked to quit with the pairing code from the config file.
-	quit := func() error { return panel.QuitRunning(url, cfg.ExtensionToken, 10*time.Second) }
-	return newInstaller(configPath, cfg.Vault, quit)
+	quit := func() error { return panel.QuitRunning(url, token, 10*time.Second) }
+	return newInstaller(configPath, vault, quit)
 }}
 
 func panelAddr(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
@@ -97,23 +109,34 @@ func installCmd(args []string, stdout, stderr io.Writer, env installEnv) error {
 	if err != nil {
 		return err
 	}
-	copied, err := in.Install(true)
-	if err != nil {
-		return err
+	wasInstalled := in.Installed()
+	copied, ierr := in.Install(true)
+	if ierr != nil && !copied && !wasInstalled {
+		return ierr // nothing was done
 	}
-	if copied {
-		fmt.Fprintf(stdout, "Installed Cortex to %s\n", in.Target)
-	} else {
-		fmt.Fprintf(stdout, "Cortex is already installed at %s; the Start Menu shortcut and start at login were refreshed.\n", in.Target)
-		return nil // this is the running copy: nothing to hand over to
+	// From here on a failing step is reported at the end, not instead of the
+	// steps after it: a missing shortcut must not keep the installed copy from starting.
+	problems := []error{}
+	if ierr != nil {
+		problems = append(problems, ierr)
 	}
-	fmt.Fprintf(stdout, "Added the Start Menu shortcut %s and registered Cortex to start at login.\n", in.Shortcut)
+	if !copied {
+		if ierr == nil {
+			fmt.Fprintf(stdout, "Cortex is already installed at %s; the Start Menu shortcut and start at login were refreshed.\n", in.Target)
+		}
+		return errors.Join(problems...) // this is the running copy: nothing to hand over to
+	}
+	fmt.Fprintf(stdout, "Installed Cortex to %s\n", in.Target)
+	if ierr == nil {
+		fmt.Fprintf(stdout, "Added the Start Menu shortcut %s and registered Cortex to start at login.\n", in.Shortcut)
+	}
 	// The panel opens in the browser, as after a first start.
 	if err := in.Sys.Start(in.Target, runArgs(port, configPath, explicit, false)); err != nil {
-		return fmt.Errorf("installed, but could not start it: %w (start it from the Start Menu)", err)
+		problems = append(problems, fmt.Errorf("Cortex was installed to %s, but could not be started: %w (start it from the Start Menu)", in.Target, err))
+	} else {
+		fmt.Fprintln(stdout, "Started it; the control panel opens in your browser. You can delete the file you ran this from.")
 	}
-	fmt.Fprintln(stdout, "Started it; the control panel opens in your browser. You can delete the file you ran this from.")
-	return nil
+	return errors.Join(problems...)
 }
 
 func uninstallCmd(args []string, stdout, stderr io.Writer, env installEnv) error {

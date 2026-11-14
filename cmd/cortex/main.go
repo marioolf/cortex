@@ -96,9 +96,20 @@ func main() {
 	if errors.Is(err, flag.ErrHelp) {
 		os.Exit(0) // the flag set already printed its usage
 	}
+	var logged loggedError
+	if errors.As(err, &logged) {
+		os.Exit(1) // run wrote it to the log and to stderr already
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cortex:", err)
 		os.Exit(1)
+	}
+}
+
+// warnConfig prints the problems of the config file that did not stop the run.
+func warnConfig(e *engine.Engine, w io.Writer) {
+	for _, m := range e.Snapshot().Warnings {
+		fmt.Fprintln(w, "cortex: warning:", m)
 	}
 }
 
@@ -124,6 +135,7 @@ func syncOnce(args []string) error {
 	if err != nil {
 		return err
 	}
+	warnConfig(e, os.Stderr)
 	if *vaultDir != "" {
 		if err := e.OverrideVault(*vaultDir); err != nil {
 			return err
@@ -177,6 +189,7 @@ func importExport(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	warnConfig(e, stderr)
 	if *vaultDir != "" {
 		if err := e.OverrideVault(*vaultDir); err != nil {
 			return err
@@ -225,6 +238,7 @@ func summarizeNote(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer e.Stop()
+	warnConfig(e, stderr)
 	if *vaultDir != "" {
 		if err := e.OverrideVault(*vaultDir); err != nil {
 			return err
@@ -260,6 +274,9 @@ func serveMCP(args []string) error {
 			return fmt.Errorf("config: %w", err)
 		}
 		dir = cfg.Vault
+		for _, m := range cfg.Warnings {
+			fmt.Fprintln(os.Stderr, "cortex: warning:", m) // stdout is the protocol
+		}
 	}
 	s := &mcp.Server{Vault: dir, Version: version, Log: log.New(os.Stderr, "cortex mcp: ", log.LstdFlags)}
 	s.Log.Printf("serving %s", dir)
@@ -276,31 +293,18 @@ func run(args []string) error {
 	fs.Parse(args)
 	explicitConfig := *configPath != ""
 
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(*port))
-	url := "http://" + addr + "/"
-
-	// Binding the port is the single-instance lock, but the holder may be some
-	// other program: only a listener that answers like our panel is Cortex.
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		if panel.Running(url, 2*time.Second) {
-			log.Printf("Cortex is already running at %s", url)
-			if !*noBrowser {
-				panel.Open(url)
-			}
-			return nil
-		}
-		return fmt.Errorf("port %d is taken by another program; use -port to pick a different one", *port)
-	}
-	defer ln.Close()
-
 	if *configPath == "" {
+		var err error
 		if *configPath, err = config.Path(); err != nil {
+			reportFatal(err, "")
 			return err
 		}
 	}
-	// A process with no console (Windows) has no stderr, so keep a log file too.
-	if closeLog, err := logToFile(filepath.Join(filepath.Dir(*configPath), logName)); err != nil {
+	// The log comes first, before anything that can fail, so that every fatal
+	// error below reaches it. A process with no console (Windows) has no
+	// stderr, so the file is the only record.
+	logPath := filepath.Join(filepath.Dir(*configPath), logName)
+	if closeLog, err := setupLog(logPath); err != nil {
 		log.Printf("could not open the log file: %v", err)
 	} else {
 		defer closeLog()
@@ -308,26 +312,52 @@ func run(args []string) error {
 	// First line of every run in the log, whatever else happens after it.
 	log.Printf("Cortex %s (%s/%s)", version, runtime.GOOS, runtime.GOARCH)
 
+	err := runCortex(*port, *configPath, explicitConfig, *noBrowser, *noAutostart, *noTray)
+	if err != nil {
+		log.Printf("fatal: %v", err)
+		reportFatal(err, logPath)
+		return loggedError{err}
+	}
+	return nil
+}
+
+func runCortex(port int, configPath string, explicitConfig, noBrowser, noAutostart, noTray bool) error {
+	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/"
+	self, _ := os.Executable()
+	// Binding the port is the single-instance lock; see claimPort for what
+	// happens when a Cortex already holds it.
+	ln, existing, err := claimPort(port, configPath, self, 10*time.Second)
+	if err != nil {
+		return err
+	}
+	if existing {
+		if !noBrowser {
+			panel.Open(url)
+		}
+		return nil
+	}
+	defer ln.Close()
+
 	// Only Windows installs; elsewhere inst stays nil and nothing changes.
 	var inst *install.Installer
 	if install.Supported() {
-		if inst, err = newInstaller(*configPath, "", nil); err != nil {
+		if inst, err = newInstaller(configPath, "", nil); err != nil {
 			log.Printf("install is not available: %v", err)
 		}
 	}
 	var handoff atomic.Bool // set when the installed copy must be started once we are gone
 
-	if _, err := os.Stat(*configPath); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		// First run: write the defaults so the file exists to be edited.
-		cfg, err := config.LoadFile(*configPath)
+		cfg, err := config.LoadFile(configPath)
 		if err != nil {
 			return err
 		}
-		if err := cfg.Save(*configPath); err != nil {
+		if err := cfg.Save(configPath); err != nil {
 			return err
 		}
 		switch {
-		case *noAutostart:
+		case noAutostart:
 		case install.Supported() && (inst == nil || !inst.Installed()):
 			// Autostart must not point into Downloads: installing registers it.
 			log.Printf("not registering Cortex to start at login: it is not installed yet (use Install in the control panel)")
@@ -340,9 +370,12 @@ func run(args []string) error {
 		}
 	}
 
-	e, err := newEngine(*configPath)
+	e, err := newEngine(configPath)
 	if err != nil {
 		return err
+	}
+	for _, w := range e.Snapshot().Warnings {
+		log.Printf("warning: %s", w) // the panel shows it at the top as well
 	}
 	log.Printf("vault %s", e.Snapshot().Vault)
 	if e.ExtensionToken() == "" {
@@ -383,7 +416,7 @@ func run(args []string) error {
 		}
 	}()
 
-	opt := panel.Options{Port: *port, Quit: stop}
+	opt := panel.Options{Port: port, Quit: stop}
 	if inst != nil {
 		opt.InstallState = func() panel.InstallState {
 			return panel.InstallState{Supported: true, Installed: inst.Installed(),
@@ -393,8 +426,14 @@ func run(args []string) error {
 			// This process holds the port and is the Cortex to replace, so it
 			// does not ask anyone to quit; run starts the new copy once the
 			// port is free (see below).
-			if _, err := inst.Install(false); err != nil {
+			copied, err := inst.Install(false)
+			if !copied && err != nil {
 				return err
+			}
+			if err != nil {
+				// The program is in place: hand over anyway, and keep what
+				// failed (the shortcut or the login entry) in the log.
+				log.Printf("install: %v", err)
 			}
 			log.Printf("installed to %s; handing over", inst.Target)
 			handoff.Store(true)
@@ -425,7 +464,7 @@ func run(args []string) error {
 	}()
 
 	log.Printf("control panel at %s", url)
-	if !*noBrowser {
+	if !noBrowser {
 		if err := panel.Open(url); err != nil {
 			log.Printf("could not open the browser: %v", err)
 		}
@@ -434,7 +473,7 @@ func run(args []string) error {
 	// Tray: it blocks until ctx is done, so quitting from the menu, from the
 	// panel or by signal all end up here. If it cannot start, Cortex goes on
 	// without it.
-	if !*noTray {
+	if !noTray {
 		t := tray.New(tray.Controls{
 			Open: func() {
 				if err := panel.Open(url); err != nil {
@@ -462,7 +501,7 @@ func run(args []string) error {
 
 	if handoff.Load() && inst != nil {
 		// The port is free now. Without -no-browser the new copy opens the panel.
-		a := runArgs(*port, *configPath, explicitConfig, *noTray)
+		a := runArgs(port, configPath, explicitConfig, noTray)
 		if err := inst.Sys.Start(inst.Target, a); err != nil {
 			log.Printf("could not start the installed copy %s: %v", inst.Target, err)
 		}

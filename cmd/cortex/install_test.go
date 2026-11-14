@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,11 +11,17 @@ import (
 	"github.com/marioolf/cortex/internal/install"
 )
 
-type recSys struct{ calls []string }
+type recSys struct {
+	calls       []string
+	shortcutErr error
+}
 
 func (r *recSys) QuitRunning() error { r.calls = append(r.calls, "quit"); return nil }
 func (r *recSys) CreateShortcut(lnk, target string) error {
 	r.calls = append(r.calls, "shortcut")
+	if r.shortcutErr != nil {
+		return r.shortcutErr
+	}
 	return os.WriteFile(lnk, nil, 0o644)
 }
 func (r *recSys) EnableAutostart(exe string) error {
@@ -164,5 +171,47 @@ func TestRunArgs(t *testing.T) {
 	}
 	if got := strings.Join(runArgs(1, "/x/c.json", true, true), " "); got != "run -port 1 -config /x/c.json -no-tray" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A missing shortcut must not keep autostart or the installed copy from starting,
+// and the failure is reported at the end, saying the program was copied.
+func TestInstallCmdContinuesAfterAFailedShortcut(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "c.json")
+	env, in, sys := fakeEnv(t, "windows", false)
+	sys.shortcutErr = errors.New("powershell failed")
+	var out, errb bytes.Buffer
+	err := installCmd([]string{"-port", "47971", "-config", cfg}, &out, &errb, env)
+	if err == nil || !strings.Contains(err.Error(), "WAS copied to "+in.Target) || !strings.Contains(err.Error(), "Start Menu shortcut") {
+		t.Fatalf("err = %v", err)
+	}
+	want := "quit|shortcut|autostart on " + in.Target + "|start " + in.Target + " run -port 47971 -config " + cfg
+	if got := strings.Join(sys.calls, "|"); got != want {
+		t.Errorf("calls = %q\nwant    %q", got, want)
+	}
+	if _, err := os.Stat(in.Target); err != nil {
+		t.Errorf("not copied: %v", err)
+	}
+	if strings.Contains(out.String(), "Added the Start Menu shortcut") {
+		t.Errorf("claims a shortcut that failed: %q", out.String())
+	}
+}
+
+// An unreadable config must not stop uninstall (or install): only the pairing code is needed.
+func TestInstallEnvSurvivesABrokenConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("LOCALAPPDATA", filepath.Join(dir, "local"))
+	t.Setenv("APPDATA", filepath.Join(dir, "roaming"))
+	for name, body := range map[string]string{
+		"not json":         `{broken`,
+		"bad summaries":    `{"extension_token":"abc","summaries":{"tool":"bogus"}}`,
+		"wrong type field": `{"extension_token":"abc","paused":"yes"}`,
+	} {
+		cfg := filepath.Join(dir, "c.json")
+		os.WriteFile(cfg, []byte(body), 0o600)
+		in, err := realInstallEnv.new(cfg, 47972)
+		if err != nil || in == nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

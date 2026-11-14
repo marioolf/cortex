@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // TestHelperSummariser is not a test: the test binary runs itself as the fake
@@ -38,6 +41,20 @@ func TestHelperSummariser(t *testing.T) {
 	case "env":
 		wd, _ := os.Getwd()
 		fmt.Printf("%s|%s|%d", os.Getenv("CORTEX_SUMMARY"), wd, len(in))
+	case "pwd":
+		wd, _ := os.Getwd()
+		fmt.Printf("%s|%s", os.Getenv("PWD"), wd)
+	case "noisy":
+		fmt.Print("\x1b[31mred\x1b[0m\x00 a\x07b \x1b]0;title\x07\x1b]8;;http://x\x1b\\link\r\n\x01\x7f\u009bC1\tTab\xff\xfe end")
+	case "sleep":
+		time.Sleep(time.Minute)
+	case "grandchild":
+		// Starts a sleeping child of its own, records its PID, then hangs.
+		c := exec.Command(os.Args[0], "-test.run=TestHelperSummariser")
+		c.Env = append(os.Environ(), "CORTEX_FAKE_MODE=sleep")
+		c.Start()
+		os.WriteFile(os.Getenv("CORTEX_FAKE_PIDFILE"), []byte(strconv.Itoa(c.Process.Pid)), 0o600)
+		time.Sleep(time.Minute)
 	case "markers":
 		fmt.Print("a <!-- cortex:end --> b <!-- cor<!-- cortex:tex:start --> c")
 	}
@@ -210,7 +227,17 @@ func TestResolve(t *testing.T) {
 	if _, _, err := Resolve("rm", nil); err == nil {
 		t.Error("unknown tool resolved")
 	}
-	argv, name, err := Resolve("custom", []string{"/x", "y"})
+	if _, _, err := Resolve("custom", []string{"./x"}); err == nil {
+		t.Error("a relative custom command resolved")
+	}
+	if _, _, err := Resolve("custom", []string{"bin/x"}); err == nil {
+		t.Error("a relative custom command resolved")
+	}
+	if _, _, err := Resolve("custom", []string{"summarise"}); err != nil {
+		t.Errorf("a bare name must resolve: %v", err)
+	}
+	abs, _ := filepath.Abs("x")
+	argv, name, err := Resolve("custom", []string{abs, "y"})
 	if err != nil || len(argv) != 2 || name == "" {
 		t.Errorf("%v %q %v", argv, name, err)
 	}
@@ -258,5 +285,67 @@ func TestWorkDirIsAbsoluteEvenForARelativeConfigPath(t *testing.T) {
 	cwd, _ := os.Getwd()
 	if !InWorkDir(filepath.Join(cwd, "cfg", "summaries-work", "x"), w) {
 		t.Error("an absolute cwd inside the folder is not recognised")
+	}
+}
+
+func TestCleanOutputHygiene(t *testing.T) {
+	out, err := Clean("\x1b[31mred\x1b[0m\x00 a\x07b \x1b]0;title\x07\x1b]8;;http://x\x1b\\link\r\n\x01\x7f\u009bC1\tTab\xff\xfe end")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "red ab link\nC1\tTab\uFFFD end"; out != want {
+		t.Errorf("out = %q, want %q", out, want)
+	}
+	if !utf8.ValidString(out) {
+		t.Error("invalid UTF-8 survived")
+	}
+	// A marker split by a NUL must not be joined by the cleaning.
+	if out, _ := Clean("a <!-- cor\x00tex:end --> b"); strings.Contains(out, "cortex:") {
+		t.Errorf("marker survived: %q", out)
+	}
+	if _, err := Clean("\x00\x1b[0m \x01"); err == nil {
+		t.Error("only control characters is empty output")
+	}
+}
+
+func TestRunSetsPWD(t *testing.T) {
+	t.Setenv("PWD", "/somewhere/else")
+	r := runner(t)
+	out, err := r.Run(context.Background(), self(t, "pwd"), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(out, "|")
+	if got, want := resolve(parts[0]), resolve(r.Dir); got != want || parts[0] == "/somewhere/else" {
+		t.Errorf("PWD = %q, want the work folder %q", parts[0], want)
+	}
+}
+
+func TestInWorkDirBehindASymlink(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	link := filepath.Join(base, "link")
+	os.MkdirAll(real, 0o755)
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks are not available:", err)
+	}
+	work := WorkDir(filepath.Join(link, "config.json")) // <link>/summaries-work, not created yet
+	for name, cwd := range map[string]string{
+		"unresolved":        work,
+		"resolved":          filepath.Join(real, "summaries-work"),
+		"resolved, inside":  filepath.Join(real, "summaries-work", "sub"),
+		"unresolved inside": filepath.Join(work, "sub"),
+	} {
+		if !InWorkDir(cwd, work) {
+			t.Errorf("%s: %s is not recognised", name, cwd)
+		}
+	}
+	// A folder that exists now, with a cwd that only resolves into it.
+	os.MkdirAll(filepath.Join(real, "summaries-work", "x"), 0o755)
+	if !InWorkDir(filepath.Join(link, "summaries-work", "x"), filepath.Join(real, "summaries-work")) {
+		t.Error("a cwd behind the symlink was not resolved")
+	}
+	if InWorkDir(filepath.Join(real, "other"), work) || InWorkDir(filepath.Join(real, "summaries-work2"), work) {
+		t.Error("a sibling matched")
 	}
 }

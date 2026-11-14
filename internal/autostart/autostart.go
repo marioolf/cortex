@@ -4,6 +4,8 @@ package autostart
 
 import (
 	"encoding/xml"
+	"path"
+	"regexp"
 	"strings"
 )
 
@@ -77,4 +79,71 @@ Comment=Saves your AI conversations as Markdown notes
 Exec=` + desktopExec(exe) + " " + runArgs + `
 Terminal=false
 `
+}
+
+// runValue matches the Cortex line of `reg query`'s output:
+//
+//	Cortex    REG_SZ    "C:\Users\me\cortex.exe" run -no-browser
+var runValue = regexp.MustCompile(`(?im)^\s*` + valueName + `\s+REG_(?:EXPAND_)?SZ\s+(.*?)\s*$`)
+
+// parseRunValue returns the command registered under the Cortex value.
+func parseRunValue(out string) (cmd string, ok bool) {
+	m := runValue.FindStringSubmatch(out)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// commandExe is the program of a registered command line: the quoted part, or
+// else everything up to ".exe" (an unquoted path may hold spaces).
+func commandExe(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if strings.HasPrefix(cmd, `"`) {
+		if i := strings.Index(cmd[1:], `"`); i >= 0 {
+			return cmd[1 : 1+i]
+		}
+		return cmd[1:]
+	}
+	if i := strings.Index(strings.ToLower(cmd), ".exe"); i >= 0 {
+		return cmd[:i+4]
+	}
+	f := strings.Fields(cmd)
+	if len(f) == 0 {
+		return ""
+	}
+	return f[0]
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// samePath compares two Windows paths: either slash, any case.
+func samePath(a, b string) bool {
+	norm := func(p string) string {
+		return path.Clean(strings.ToLower(strings.ReplaceAll(p, `\`, "/")))
+	}
+	return norm(a) == norm(b)
+}
+
+// registeredIsThis tells whether the `reg query` output registers exe. reg.exe
+// writes in the console's code page, so a registered path with accented
+// characters comes back mangled; when both sides have such characters the
+// paths cannot be compared and the registration is trusted.
+func registeredIsThis(out, exe string) bool {
+	cmd, ok := parseRunValue(out)
+	if !ok {
+		return false
+	}
+	reg := commandExe(cmd)
+	if !isASCII(reg) && !isASCII(exe) {
+		return true
+	}
+	return samePath(reg, exe)
 }

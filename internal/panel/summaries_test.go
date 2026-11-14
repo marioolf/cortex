@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marioolf/cortex/internal/config"
+	"github.com/marioolf/cortex/internal/engine"
 )
 
 // fakeOnPath makes a program with that name findable on PATH, and nothing else.
@@ -129,4 +130,76 @@ func TestPageHasTheSummariesSection(t *testing.T) {
 			t.Errorf("page lacks %q", want)
 		}
 	}
+}
+
+func TestInvalidSummariesAreExplainedNotOffered(t *testing.T) {
+	en := setup(t)
+	os.WriteFile(en.cfgPath, []byte(`{"vault":"`+filepath.ToSlash(en.vault)+`","extension_token":"`+pairing+`","summaries":{"tool":"bogus"}}`), 0o600)
+	e2 := setupFromFile(t, en.cfgPath)
+	st := e2.state(t)
+	if len(st.Warnings) != 1 || !strings.Contains(st.Warnings[0], "bogus") || !st.Summaries.Invalid || st.Summaries.Enabled {
+		t.Fatalf("state = %+v", st)
+	}
+	if c := e2.do("POST", "/api/config", good, tok, "application/json", `{"summaries":{"enabled":true}}`).Code; c != 409 {
+		t.Errorf("summaries change on an invalid block: %d", c)
+	}
+	if c := e2.do("POST", "/api/config", good, tok, "application/json", `{"paused":true}`).Code; c != 200 {
+		t.Errorf("another setting: %d", c)
+	}
+	body := e2.do("GET", "/", good, "", "", "").Body.String()
+	for _, want := range []string{`id="warnings"`, `id="sum-problem"`, "m.invalid"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	if w := setup(t).state(t).Warnings; w == nil || len(w) != 0 {
+		t.Errorf("warnings = %#v, want an empty list", w)
+	}
+}
+
+func TestAutostartNeedsTheInstalledCopy(t *testing.T) {
+	installed := false
+	en := setupWith(t, nil, func(o *Options) {
+		o.InstallState = func() InstallState { return InstallState{Supported: true, Installed: installed} }
+	})
+	post := func(on string) (int, string) {
+		w := en.do("POST", "/api/config", good, tok, "application/json", `{"autostart":`+on+`}`)
+		return w.Code, w.Body.String()
+	}
+	if c, b := post("true"); c != 409 || !strings.Contains(b, "Install Cortex first") || en.autostart {
+		t.Errorf("enable from a non-installed copy: %d %s (autostart=%v)", c, b, en.autostart)
+	}
+	if c, _ := post("false"); c != 200 {
+		t.Errorf("disable: %d", c)
+	}
+	installed = true
+	if c, _ := post("true"); c != 200 || !en.autostart {
+		t.Errorf("enable from the installed copy: %d", c)
+	}
+	body := en.do("GET", "/", good, "", "", "").Body.String()
+	for _, want := range []string{`id="autostart-hint"`, "Install Cortex first"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// setupFromFile is a panel over an existing config file, however broken its summaries are.
+func setupFromFile(t *testing.T, cfgPath string) *env {
+	t.Helper()
+	e, err := engine.New(cfgPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Stop)
+	en := &env{cfgPath: cfgPath, eng: e}
+	en.h = New(e, tok, Options{
+		Port: 47999, TempDir: t.TempDir(), ClientPaths: map[string]string{}, GOOS: "linux",
+		Exe:              func() (string, error) { return "/x/cortex", nil },
+		WSLAvailable:     func() bool { return false },
+		AutostartEnabled: func() bool { return false },
+		SetAutostart:     func(bool) error { return nil },
+		Open:             func(string) error { return nil },
+	})
+	return en
 }

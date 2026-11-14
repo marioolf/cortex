@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -28,6 +30,14 @@ type Config struct {
 	// Summaries is the optional distillation of finished conversations. Off by
 	// default: turning it on sends conversation text to an external command.
 	Summaries Summaries `json:"summaries"`
+
+	// Warnings are problems found while loading that did not stop Cortex
+	// (see LoadFile). Never written to the file.
+	Warnings []string `json:"-"`
+	// rawSummaries is the summaries block exactly as the file had it when it
+	// was unusable and was replaced by "off": Save writes it back, so a
+	// change made from the panel does not destroy what the user wrote.
+	rawSummaries json.RawMessage
 }
 
 // Summaries configures the summaries. Command is deliberately not settable
@@ -68,21 +78,45 @@ func (s Summaries) Hourly() int {
 
 // Validate rejects what the summaries could not run with. Preset names are
 // checked by the caller that knows them (see ValidTools).
-func (c *Config) Validate() error {
-	s := c.Summaries
+func (c *Config) Validate() error { return c.Summaries.validate() }
+
+func (s Summaries) validate() error {
 	if s.IdleMinutes < 0 || s.MaxPerHour < 0 {
 		return errors.New("summaries: idle_minutes and max_per_hour cannot be negative")
 	}
 	if !slices.Contains(ValidTools, s.Tool) {
 		return fmt.Errorf("summaries: unknown tool %q", s.Tool)
 	}
-	if s.Tool == ToolCustom && (len(s.Command) == 0 || strings.TrimSpace(s.Command[0]) == "") {
-		return errors.New(`summaries: tool "custom" needs a non-empty "command" in the config file`)
+	if s.Tool == ToolCustom {
+		if len(s.Command) == 0 || strings.TrimSpace(s.Command[0]) == "" {
+			return errors.New(`summaries: tool "custom" needs a non-empty "command" in the config file`)
+		}
+		if err := CheckCommand(s.Command); err != nil {
+			return fmt.Errorf("summaries: %w", err)
+		}
 	}
 	for _, p := range s.Projects {
 		if strings.TrimSpace(p) == "" {
 			return errors.New("summaries: empty project name")
 		}
+	}
+	return nil
+}
+
+// CheckCommand accepts a custom command only if its program is an absolute
+// path or a bare name looked up on PATH. A relative path such as ./x would be
+// resolved against the summaries work folder, where the summariser itself can
+// write.
+func CheckCommand(argv []string) error {
+	if len(argv) == 0 || strings.TrimSpace(argv[0]) == "" {
+		return errors.New("the custom command is empty")
+	}
+	p := argv[0]
+	if filepath.IsAbs(p) {
+		return nil
+	}
+	if p == "." || p == ".." || strings.ContainsAny(p, `/\`) || runtime.GOOS == "windows" && strings.Contains(p, ":") {
+		return fmt.Errorf(`the custom command %q must be an absolute path or a bare program name found on PATH, not a relative path`, p)
 	}
 	return nil
 }
@@ -115,6 +149,13 @@ func Load() (*Config, error) {
 	return LoadFile(path)
 }
 
+// plain has no methods, so decoding into it does not recurse.
+type plain Config
+
+// LoadFile reads the config. A broken file is an error, except for a broken
+// "summaries" block: that one is replaced by "off" and described in
+// Config.Warnings, because a mistake in an optional feature must not stop the
+// product.
 func LoadFile(path string) (*Config, error) {
 	c := &Config{}
 	data, err := os.ReadFile(path)
@@ -122,8 +163,27 @@ func LoadFile(path string) (*Config, error) {
 		return nil, err
 	}
 	if err == nil {
-		if err := json.Unmarshal(data, c); err != nil {
+		f := struct {
+			plain
+			Summaries json.RawMessage `json:"summaries"`
+		}{}
+		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, err
+		}
+		*c = Config(f.plain)
+		c.Summaries = Summaries{}
+		if raw := bytes.TrimSpace(f.Summaries); len(raw) > 0 && string(raw) != "null" {
+			var s Summaries
+			err := json.Unmarshal(raw, &s)
+			if err == nil {
+				err = s.validate()
+			}
+			if err != nil {
+				c.rawSummaries = slices.Clone(raw)
+				c.Warnings = append(c.Warnings, fmt.Sprintf("The summaries settings in %s are not valid and summaries are switched off until this is fixed: %s", path, strings.TrimPrefix(err.Error(), "summaries: ")))
+			} else {
+				c.Summaries = s
+			}
 		}
 	}
 	if c.Vault == "" {
@@ -133,10 +193,27 @@ func LoadFile(path string) (*Config, error) {
 		}
 		c.Vault = filepath.Join(home, "Cortex")
 	}
-	if err := c.Validate(); err != nil {
-		return nil, err
-	}
 	return c, nil
+}
+
+// Pairing reads only the pairing code and the vault from the file, for
+// install, uninstall and the takeover check, which must work whatever else is
+// wrong with it. problem says what could not be read.
+func Pairing(path string) (token, vault string, problem error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		return "", "", fmt.Errorf("%s is not valid JSON: %w", path, err)
+	}
+	json.Unmarshal(m["extension_token"], &token)
+	json.Unmarshal(m["vault"], &vault)
+	return token, vault, nil
 }
 
 func (c *Config) SourceEnabled(id string) bool { return !slices.Contains(c.DisabledSources, id) }
@@ -152,7 +229,14 @@ func (c *Config) Save(path string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
+	var v any = c
+	if c.rawSummaries != nil {
+		v = struct {
+			plain
+			Summaries json.RawMessage `json:"summaries"`
+		}{plain(*c), c.rawSummaries}
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}

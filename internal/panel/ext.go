@@ -63,7 +63,10 @@ func (p *panel) extAllowed(r *http.Request) bool {
 }
 
 func (p *panel) extPing(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": p.e.Version})
+	// exe lets a newer copy of Cortex tell whether it is the one running here
+	// (see RunningExe); empty when our own path is unknown.
+	exe, _ := p.opt.Exe()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": p.e.Version, "exe": exe})
 }
 
 // extQuit stops Cortex for a caller that holds the pairing code: the installer

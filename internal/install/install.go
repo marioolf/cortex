@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/marioolf/cortex/internal/summarize"
 )
 
 // System is what the installer asks of the operating system.
@@ -78,13 +80,16 @@ func Canonical(p string) string {
 }
 
 // Same reports whether a and b name the same file by path.
-func (in *Installer) Same(a, b string) bool {
-	canon := in.Canon
+func (in *Installer) Same(a, b string) bool { return Same(a, b, in.FoldCase, in.Canon) }
+
+// Same reports whether a and b name the same file by path. canon turns a path
+// into a comparable form (nil means Canonical); foldCase ignores case.
+func Same(a, b string, foldCase bool, canon func(string) string) bool {
 	if canon == nil {
 		canon = Canonical
 	}
 	a, b = canon(a), canon(b)
-	if in.FoldCase {
+	if foldCase {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
@@ -121,6 +126,11 @@ func (in *Installer) retry(f func() error) error {
 // first; the panel's own install passes false, since that Cortex is itself.
 // Running it from the installed copy only repairs the shortcut and autostart.
 // It does not start anything: the caller hands over.
+//
+// When the copy fails, nothing else is tried and copied is false. Once the
+// program is in place, a failing shortcut does not stop the autostart step (or
+// the other way round): every failure is reported, joined in one error, and
+// each says what step failed and, after a copy, that Cortex WAS copied.
 func (in *Installer) Install(stopRunning bool) (copied bool, err error) {
 	if !in.Installed() {
 		if stopRunning {
@@ -133,13 +143,21 @@ func (in *Installer) Install(stopRunning bool) (copied bool, err error) {
 		}
 		copied = true
 	}
+	var errs []error
 	if err := in.Sys.CreateShortcut(in.Shortcut, in.Target); err != nil {
-		return copied, fmt.Errorf("Start Menu shortcut: %w", err)
+		errs = append(errs, in.stepError(copied, "the Start Menu shortcut could not be created", err))
 	}
 	if err := in.Sys.EnableAutostart(in.Target); err != nil {
-		return copied, fmt.Errorf("autostart: %w", err)
+		errs = append(errs, in.stepError(copied, "Cortex could not be registered to start at login", err))
 	}
-	return copied, nil
+	return copied, errors.Join(errs...)
+}
+
+func (in *Installer) stepError(copied bool, what string, err error) error {
+	if copied {
+		return fmt.Errorf("Cortex WAS copied to %s, but %s: %w", in.Target, what, err)
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }
 
 // copyReplace writes the program next to Target under a temporary name and
@@ -238,6 +256,9 @@ func (in *Installer) Uninstall(purge bool) (Report, error) {
 // given, so it is never removed recursively.
 func (in *Installer) purgeConfig(r *Report) error {
 	dir := filepath.Dir(in.ConfigFile)
+	if err := in.purgeWorkDir(r); err != nil {
+		return err
+	}
 	files := []string{in.ConfigFile, in.LogFile}
 	if tmp, _ := filepath.Glob(filepath.Join(dir, ".config-*.tmp")); tmp != nil {
 		files = append(files, tmp...)
@@ -257,6 +278,37 @@ func (in *Installer) purgeConfig(r *Report) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		r.Left = append(r.Left, dir+" (not empty)")
 	}
+	return nil
+}
+
+// purgeWorkDir removes the summaries' work folder next to the config file. It
+// is Cortex's own folder, so it goes recursively, but only when the path is
+// exactly <config dir>/summaries-work; if that is a symlink, only the link is
+// removed, never what it points to.
+func (in *Installer) purgeWorkDir(r *Report) error {
+	dir, err := filepath.Abs(filepath.Dir(in.ConfigFile))
+	if err != nil {
+		return err
+	}
+	work := summarize.WorkDir(in.ConfigFile)
+	if work != filepath.Join(dir, "summaries-work") {
+		return nil // not what we expect: leave it alone
+	}
+	st, err := os.Lstat(work)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case st.Mode()&fs.ModeSymlink != 0 || !st.IsDir():
+		err = os.Remove(work)
+	default:
+		err = os.RemoveAll(work)
+	}
+	if err != nil {
+		return err
+	}
+	r.Removed = append(r.Removed, work)
 	return nil
 }
 

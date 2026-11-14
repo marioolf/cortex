@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -23,7 +22,9 @@ const (
 	// expire after summaryErrorTTL, unlike a round's warnings, which every
 	// round clears.
 	maxSummaryErrors = 5
-	summaryErrorTTL  = time.Hour
+	// maxStderrChars is how much of the tool's first stderr line a failure message keeps.
+	maxStderrChars  = 200
+	summaryErrorTTL = time.Hour
 )
 
 type SummaryPreset struct {
@@ -45,6 +46,10 @@ type SummaryState struct {
 	Queued          int             `json:"queued"`
 	DoneThisHour    int             `json:"done_this_hour"`
 	LastError       string          `json:"last_error"`
+	// Invalid is set when the config file's summaries block is unusable: the
+	// feature is off and the panel explains why (State.Warnings) instead of
+	// offering controls.
+	Invalid bool `json:"invalid"`
 }
 
 // candidate is a note of a selected project that may need a summary.
@@ -72,12 +77,15 @@ type sumState struct {
 	mu      sync.Mutex
 	queue   []queued
 	running bool
-	starts  []time.Time // when commands were started, for the rate limit
-	done    []time.Time
-	failed  map[vault.Key]failure
-	errs    []summaryError
-	lastErr string
-	cands   map[vault.Key]*candidate // by source and session ID; touched only while holding run
+	// inflight is the key whose command is running: it has left the queue but
+	// must not be queued or started again until it is done.
+	inflight *vault.Key
+	starts   []time.Time // when commands were started, for the rate limit
+	done     []time.Time
+	failed   map[vault.Key]failure
+	errs     []summaryError
+	lastErr  string
+	cands    map[vault.Key]*candidate // by source and session ID; touched only while holding run
 }
 
 type queued struct {
@@ -147,9 +155,9 @@ func (e *Engine) scanSummaries(cfg *config.Config, v *vault.Vault) {
 			continue
 		}
 		e.sum.mu.Lock()
-		f, failedBefore := e.sum.failed[id]
+		skip := e.skipLocked(id, hash, now)
 		e.sum.mu.Unlock()
-		if failedBefore && f.hash == hash && now.Sub(f.at) < failureBackoff {
+		if skip {
 			continue
 		}
 		found = append(found, queued{id, hash})
@@ -172,6 +180,20 @@ func (e *Engine) scanSummaries(cfg *config.Config, v *vault.Vault) {
 	if start {
 		go e.summaryWorker()
 	}
+}
+
+// skipLocked tells whether this content of a session must not be queued: its
+// command is running, it is queued already, or it failed within the backoff.
+// Call it with e.sum.mu held.
+func (e *Engine) skipLocked(id vault.Key, hash string, now time.Time) bool {
+	if e.sum.inflight != nil && *e.sum.inflight == id {
+		return true
+	}
+	if i := slices.IndexFunc(e.sum.queue, func(x queued) bool { return x.id == id }); i >= 0 && e.sum.queue[i].hash == hash {
+		return true
+	}
+	f, failedBefore := e.sum.failed[id]
+	return failedBefore && f.hash == hash && now.Sub(f.at) < failureBackoff
 }
 
 // summaryWorker runs the queue one summary at a time, outside the round lock.
@@ -199,9 +221,17 @@ func (e *Engine) summaryWorker() {
 		q := e.sum.queue[0]
 		e.sum.queue = e.sum.queue[1:]
 		e.sum.starts = append(e.sum.starts, now)
+		e.sum.inflight = &q.id
 		e.sum.mu.Unlock()
 
-		e.summariseQueued(q)
+		ran := e.summariseQueued(q)
+
+		e.sum.mu.Lock()
+		e.sum.inflight = nil
+		if !ran && len(e.sum.starts) > 0 {
+			e.sum.starts = e.sum.starts[:len(e.sum.starts)-1] // nothing was started: not counted
+		}
+		e.sum.mu.Unlock()
 	}
 	e.sum.mu.Lock()
 	e.sum.running = false
@@ -213,9 +243,12 @@ func recent(ts []time.Time, now time.Time) []time.Time {
 	return slices.DeleteFunc(ts, func(t time.Time) bool { return now.Sub(t) >= time.Hour })
 }
 
-// summariseQueued does one queued item. It takes the round lock only to read
-// the conversation and to write the summary.
-func (e *Engine) summariseQueued(q queued) {
+// summariseQueued does one queued item and reports whether it started the
+// command. It takes the round lock only to read the conversation and to write
+// the summary. The state may have moved on since the item was queued, so it
+// checks again, under the lock, that the content has no summary and is not in
+// its failure backoff.
+func (e *Engine) summariseQueued(q queued) (ran bool) {
 	e.run.Lock()
 	e.mu.Lock()
 	cfg := e.cfg
@@ -226,22 +259,32 @@ func (e *Engine) summariseQueued(q queued) {
 	}
 	if !e.summariesWanted(cfg, project) || e.v == nil {
 		e.run.Unlock()
-		return
+		return false
 	}
 	text, hash, err := e.v.ConversationText(q.id)
-	label := e.noteLabel(e.v, q.id)
+	have, haveOK := e.v.Summary(q.id)
+	label := noteLabel(q.id)
 	e.run.Unlock()
 	if err != nil || hash != q.hash {
-		return // gone or changed: the next scan decides again
+		return false // gone or changed: the next scan decides again
+	}
+	if haveOK && have == hash {
+		return false
+	}
+	e.sum.mu.Lock()
+	f, failedBefore := e.sum.failed[q.id]
+	e.sum.mu.Unlock()
+	if failedBefore && f.hash == hash && e.now().Sub(f.at) < failureBackoff {
+		return false
 	}
 
 	out, err := e.generate(cfg.Summaries, text)
 	if e.ctx.Err() != nil {
-		return
+		return true
 	}
 	if err != nil {
 		e.fail(q.id, hash, label, err)
-		return
+		return true
 	}
 
 	e.run.Lock()
@@ -250,7 +293,7 @@ func (e *Engine) summariseQueued(q queued) {
 	cfg = e.cfg
 	e.mu.Unlock()
 	if !e.summariesWanted(cfg, project) {
-		return // turned off or paused meanwhile: stop, do not write
+		return true // turned off or paused meanwhile: stop, do not write
 	}
 	_, name, _ := summarize.Resolve(cfg.Summaries.Tool, cfg.Summaries.Command)
 	switch err := e.v.WriteSummary(q.id, hash, name, out); {
@@ -264,6 +307,7 @@ func (e *Engine) summariseQueued(q queued) {
 		delete(e.sum.failed, q.id)
 		e.sum.mu.Unlock()
 	}
+	return true
 }
 
 // generate runs the configured command on text and returns the cleaned summary.
@@ -278,16 +322,44 @@ func (e *Engine) generate(s config.Summaries, text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return summarize.Clean(out)
+	out, err = summarize.Clean(out)
+	if err != nil {
+		return "", err
+	}
+	// The tool saw the conversation and may repeat a secret from it, or invent
+	// one: the summary goes through the same redactor as every note.
+	e.mu.Lock()
+	red := e.red
+	e.mu.Unlock()
+	return red.Apply(out), nil
 }
 
-func (e *Engine) noteLabel(v *vault.Vault, id vault.Key) string {
-	if p := v.NotePath(id); p != "" {
-		if rel, err := filepath.Rel(v.Root, p); err == nil {
-			return filepath.ToSlash(rel)
-		}
+// noteLabel names a note in messages by its source and the start of its
+// session ID, never by title or file name, which come from the conversation.
+func noteLabel(id vault.Key) string {
+	n := id.ID
+	if r := []rune(n); len(r) > 8 {
+		n = string(r[:8])
 	}
-	return id.ID
+	return id.Source + " session " + n
+}
+
+// failureText is the message of a failed summary: what went wrong, plus at
+// most the first line of the tool's stderr, cut and redacted. It never holds
+// conversation text.
+func (e *Engine) failureText(err error) string {
+	var re *summarize.RunError
+	if !errors.As(err, &re) {
+		return err.Error()
+	}
+	msg := re.Program + ": " + re.Err.Error()
+	if l := re.FirstLine(maxStderrChars); l != "" {
+		e.mu.Lock()
+		red := e.red
+		e.mu.Unlock()
+		msg += ": " + red.Apply(l)
+	}
+	return msg
 }
 
 // fail records a failure: no retry for the same content for an hour, and a
@@ -295,7 +367,7 @@ func (e *Engine) noteLabel(v *vault.Vault, id vault.Key) string {
 // excerpt, never the conversation.
 func (e *Engine) fail(id vault.Key, hash, label string, err error) {
 	now := e.now()
-	msg := fmt.Sprintf("summary of %s: %v", label, err)
+	msg := fmt.Sprintf("summary of %s: %s", label, e.failureText(err))
 	e.sum.mu.Lock()
 	defer e.sum.mu.Unlock()
 	if e.sum.failed == nil {
@@ -330,6 +402,7 @@ func (e *Engine) summaryState() SummaryState {
 		Presets: []SummaryPreset{}, CustomAvailable: len(cfg.Command) > 0 && cfg.Command[0] != "",
 		Command: []string{},
 	}
+	st.Invalid = len(e.cfg.Warnings) > 0
 	if st.Projects == nil {
 		st.Projects = []string{}
 	}

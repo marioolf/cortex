@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -77,5 +78,27 @@ func TestSummarizeCommand(t *testing.T) {
 	cfg.Save(cfgPath)
 	if _, _, err := runSummarize(rel, "-config", cfgPath); err == nil || !strings.Contains(err.Error(), "no usable summary tool") {
 		t.Errorf("without a tool: %v", err)
+	}
+}
+
+// A broken summaries block must not stop sync, import or the MCP server: they
+// run with summaries off and say why on stderr.
+func TestCommandsRunWithAnInvalidSummariesBlock(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	vault := filepath.Join(dir, "vault")
+	os.WriteFile(cfgPath, []byte(`{"vault":`+strconv.Quote(vault)+`,"summaries":{"enabled":true,"tool":"bogus"}}`), 0o600)
+	_, errOut, err := runImport(writeTemp(t, dir, "c.json", claudeExport), "-config", cfgPath)
+	if err != nil || !strings.Contains(errOut, "warning") || !strings.Contains(errOut, "bogus") {
+		t.Errorf("import: err=%v stderr=%q", err, errOut)
+	}
+	for _, k := range []string{"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "APPDATA", "LOCALAPPDATA"} {
+		t.Setenv(k, filepath.Join(dir, "home")) // the collectors must not read the real tools' folders
+	}
+	if err := syncOnce([]string{"-config", cfgPath, "-vault", vault}); err != nil {
+		t.Errorf("sync: %v", err)
+	}
+	if _, errOut, err := runSummarize("x.md", "-config", cfgPath); err == nil || !strings.Contains(errOut, "bogus") {
+		t.Errorf("summarize: err=%v stderr=%q", err, errOut)
 	}
 }
