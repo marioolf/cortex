@@ -27,6 +27,7 @@ import (
 	"github.com/marioolf/cortex/internal/collector/opencode"
 	"github.com/marioolf/cortex/internal/config"
 	"github.com/marioolf/cortex/internal/engine"
+	"github.com/marioolf/cortex/internal/mcp"
 	"github.com/marioolf/cortex/internal/panel"
 )
 
@@ -38,6 +39,8 @@ const usage = `Usage:
                              (the default when no command is given)
   cortex sync [-vault DIR] [-config FILE]
                              save all conversations found on this machine once
+  cortex mcp [-vault DIR] [-config FILE]
+                             serve the vault to AI tools over MCP on stdin/stdout
   cortex version
 `
 
@@ -57,6 +60,8 @@ func main() {
 		err = run(args)
 	case "sync":
 		err = syncOnce(args)
+	case "mcp":
+		err = serveMCP(args)
 	case "version":
 		fmt.Println(version)
 	default:
@@ -117,6 +122,34 @@ func syncOnce(args []string) error {
 		return fmt.Errorf("%d failed", st.Failed) // scripts must be able to tell
 	}
 	return nil
+}
+
+// serveMCP answers MCP requests on stdin/stdout. It only reads the vault, so it
+// does not need `run` to be up, and it must not print anything but protocol
+// messages: logs go to stderr.
+func serveMCP(args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
+	vaultDir := fs.String("vault", "", "vault directory (default: the configured one, or ~/Cortex)")
+	configPath := fs.String("config", "", "config file (default: the one in the OS config directory)")
+	fs.Parse(args)
+
+	dir := *vaultDir
+	if dir == "" {
+		var cfg *config.Config
+		var err error
+		if *configPath == "" {
+			cfg, err = config.Load()
+		} else {
+			cfg, err = config.LoadFile(*configPath)
+		}
+		if err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+		dir = cfg.Vault
+	}
+	s := &mcp.Server{Vault: dir, Version: version, Log: log.New(os.Stderr, "cortex mcp: ", log.LstdFlags)}
+	s.Log.Printf("serving %s", dir)
+	return s.Serve(os.Stdin, os.Stdout)
 }
 
 func run(args []string) error {

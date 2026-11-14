@@ -23,7 +23,9 @@ import (
 
 	"github.com/marioolf/cortex/internal/autostart"
 	"github.com/marioolf/cortex/internal/config"
+	"github.com/marioolf/cortex/internal/connect"
 	"github.com/marioolf/cortex/internal/engine"
+	"github.com/marioolf/cortex/internal/wsl"
 )
 
 //go:embed page.html
@@ -40,6 +42,12 @@ type Options struct {
 	Open             func(target string) error // opens a folder or URL in the OS
 	Quit             func()                    // stops the whole process; nil hides nothing, the request just fails
 	Now              func() time.Time          // clock for the autostart cache; nil means time.Now
+
+	// For the "Connect your AI tools" section.
+	Exe          func() (string, error) // path of this program; nil means the real one
+	ClientPaths  map[string]string      // config file of each client (see connect.Paths); nil means the real ones
+	GOOS         string                 // OS to build the command lines for; empty means runtime.GOOS
+	WSLAvailable func() bool            // whether WSL distros exist; nil asks wsl.exe
 }
 
 // Header marks every response as coming from Cortex, so that a second instance
@@ -54,6 +62,8 @@ type panel struct {
 	e     *engine.Engine
 	token string
 	opt   Options
+
+	connectMu sync.Mutex // one edit of a client's config file at a time
 
 	mu        sync.Mutex
 	autostart bool
@@ -79,12 +89,25 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
+	if opt.Exe == nil {
+		opt.Exe = connect.Executable
+	}
+	if opt.ClientPaths == nil {
+		opt.ClientPaths = connect.Paths()
+	}
+	if opt.GOOS == "" {
+		opt.GOOS = runtime.GOOS
+	}
+	if opt.WSLAvailable == nil {
+		opt.WSLAvailable = func() bool { return len(wsl.Roots()) > 0 }
+	}
 	p := &panel{e: e, token: token, opt: opt}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", p.page)
 	mux.HandleFunc("GET /api/state", p.state)
 	mux.HandleFunc("POST /api/config", p.config)
 	mux.HandleFunc("POST /api/open-vault", p.openVault)
+	mux.HandleFunc("POST /api/connect", p.connect)
 	mux.HandleFunc("POST /api/quit", p.quit)
 	return p.guard(mux)
 }
@@ -133,10 +156,64 @@ func (p *panel) page(w http.ResponseWriter, r *http.Request) {
 	strings.NewReplacer("{{NONCE}}", nonce, "{{TOKEN}}", p.token).WriteString(w, page)
 }
 
-func (p *panel) snapshot() engine.State {
+// stateJSON is /api/state: the engine's state plus what the page needs to
+// connect AI tools.
+type stateJSON struct {
+	engine.State
+	MCP mcpState `json:"mcp"`
+}
+
+type mcpState struct {
+	Command       string        `json:"command"` // empty when our own path is unknown
+	Args          []string      `json:"args"`
+	ClaudeCode    string        `json:"claude_code"`               // command line for Claude Code
+	ClaudeCodeWSL string        `json:"claude_code_wsl,omitempty"` // the same, to run inside WSL
+	Clients       []clientState `json:"clients"`
+}
+
+type clientState struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Available bool   `json:"available"` // its config folder exists
+	Status    string `json:"status"`    // "", "connected" or "outdated"
+	Error     string `json:"error,omitempty"`
+}
+
+func (p *panel) snapshot() stateJSON {
 	s := p.e.Snapshot()
 	s.Autostart = p.autostartEnabled(false)
-	return s
+	return stateJSON{s, p.mcpState()}
+}
+
+func (p *panel) mcpState() mcpState {
+	m := mcpState{Args: []string{"mcp"}, Clients: []clientState{}}
+	exe, err := p.opt.Exe()
+	if err != nil || exe == "" {
+		return m
+	}
+	m.Command = exe
+	m.ClaudeCode = connect.ClaudeCodeCommand(exe, p.opt.GOOS)
+	if p.opt.GOOS == "windows" {
+		// The Windows program started from WSL finds its own config through
+		// interop, so no -vault is needed.
+		if w, ok := connect.WSLPath(exe); ok && p.opt.WSLAvailable() {
+			m.ClaudeCodeWSL = connect.ClaudeCodeCommand(w, "linux")
+		}
+	}
+	want := connect.Entry{Command: exe, Args: m.Args}
+	for _, c := range connect.Clients {
+		path := p.opt.ClientPaths[c.ID]
+		cs := clientState{ID: c.ID, Name: c.Name, Path: path, Available: connect.Available(path)}
+		if cs.Available {
+			var err error
+			if cs.Status, err = connect.Status(path, want); err != nil {
+				cs.Error = err.Error()
+			}
+		}
+		m.Clients = append(m.Clients, cs)
+	}
+	return m
 }
 
 // autostartEnabled returns the cached setting, looking it up again when it is
@@ -235,6 +312,42 @@ func toggle(list []string, v string, present bool) []string {
 		list = append(list, v)
 	}
 	return list
+}
+
+// connect adds Cortex to the config file of one client.
+func (p *panel) connect(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Client string `json:"client"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		jsonError(w, "bad request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	i := slices.IndexFunc(connect.Clients, func(c connect.Client) bool { return c.ID == req.Client })
+	if i < 0 {
+		jsonError(w, "unknown client", http.StatusBadRequest)
+		return
+	}
+	name, path := connect.Clients[i].Name, p.opt.ClientPaths[req.Client]
+	if !connect.Available(path) {
+		jsonError(w, name+" does not seem to be installed (no "+filepath.Dir(path)+" folder); paste the snippet by hand instead", http.StatusBadRequest)
+		return
+	}
+	exe, err := p.opt.Exe()
+	if err != nil || exe == "" {
+		jsonError(w, "cannot tell where Cortex is installed", http.StatusInternalServerError)
+		return
+	}
+	p.connectMu.Lock()
+	err = connect.Add(path, connect.Entry{Command: exe, Args: []string{"mcp"}})
+	p.connectMu.Unlock()
+	if err != nil {
+		jsonError(w, name+": "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, p.snapshot())
 }
 
 func (p *panel) openVault(w http.ResponseWriter, r *http.Request) {

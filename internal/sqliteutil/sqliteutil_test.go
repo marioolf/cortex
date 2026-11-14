@@ -188,7 +188,10 @@ func TestOpenRollbackJournalWithConcurrentWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.SetMaxOpenConns(1)
-	for _, q := range []string{`CREATE TABLE t (a)`, `INSERT INTO t VALUES ('v0')`} {
+	// The initial value has the same shape as the updates: readers may run
+	// before the writer goroutine has done its first one (slow to start on Windows).
+	pad := strings.Repeat("x", 500)
+	for _, q := range []string{`CREATE TABLE t (a)`, `INSERT INTO t VALUES ('v-` + pad + `')`} {
 		if _, err := w.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +203,6 @@ func TestOpenRollbackJournalWithConcurrentWriter(t *testing.T) {
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		pad := strings.Repeat("x", 500)
 		for i := 0; ; i++ {
 			select {
 			case <-stop:

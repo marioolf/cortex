@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ func (fakeSource) Collect(fn func(*session.Session), warn func(error)) {
 type env struct {
 	h         http.Handler
 	cfgPath   string
+	clients   map[string]string // config file of each client, in a temp dir
 	autostart bool
 	opened    []string
 }
@@ -46,9 +48,16 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e.Sync()
-	en := &env{cfgPath: cfgPath}
+	en := &env{cfgPath: cfgPath, clients: map[string]string{
+		"claude-desktop": filepath.Join(dir, "Claude", "claude_desktop_config.json"),
+		"cursor":         filepath.Join(dir, ".cursor", "mcp.json"),
+	}}
 	en.h = New(e, tok, Options{
 		Port:             47999,
+		Exe:              func() (string, error) { return `C:\Apps\Cortex\cortex.exe`, nil },
+		ClientPaths:      en.clients,
+		GOOS:             "windows",
+		WSLAvailable:     func() bool { return true },
 		AutostartEnabled: func() bool { return en.autostart },
 		SetAutostart:     func(on bool) error { en.autostart = on; return nil },
 		Open:             func(p string) error { en.opened = append(en.opened, p); return nil },
@@ -263,6 +272,8 @@ func TestAutostartIsCached(t *testing.T) {
 	h := New(e, tok, Options{
 		Port:             47999,
 		Now:              func() time.Time { return now },
+		Exe:              func() (string, error) { return "/opt/cortex", nil },
+		ClientPaths:      map[string]string{},
 		AutostartEnabled: func() bool { lookups++; return on },
 		SetAutostart:     func(v bool) error { on = v; return nil },
 	})
@@ -291,5 +302,145 @@ func TestAutostartIsCached(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), r)
 	if !get() {
 		t.Error("the value was not refreshed right after SetAutostart")
+	}
+}
+
+func (en *env) state(t *testing.T) stateJSON {
+	t.Helper()
+	w := en.do("GET", "/api/state", good, tok, "", "")
+	var s stateJSON
+	if err := json.NewDecoder(w.Body).Decode(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func TestStateReportsMCPCommand(t *testing.T) {
+	en := setup(t)
+	m := en.state(t).MCP
+	if m.Command != `C:\Apps\Cortex\cortex.exe` || len(m.Args) != 1 || m.Args[0] != "mcp" {
+		t.Errorf("mcp = %+v", m)
+	}
+	if want := `claude mcp add --scope user cortex -- "C:\Apps\Cortex\cortex.exe" mcp`; m.ClaudeCode != want {
+		t.Errorf("claude_code = %s", m.ClaudeCode)
+	}
+	if want := `claude mcp add --scope user cortex -- "/mnt/c/Apps/Cortex/cortex.exe" mcp`; m.ClaudeCodeWSL != want {
+		t.Errorf("claude_code_wsl = %s", m.ClaudeCodeWSL)
+	}
+	if strings.Contains(m.ClaudeCodeWSL, "-vault") {
+		t.Error("the WSL variant must not need -vault")
+	}
+	// The Windows backslashes survive JSON encoding.
+	raw := en.do("GET", "/api/state", good, tok, "", "").Body.String()
+	if !strings.Contains(raw, `"command":"C:\\Apps\\Cortex\\cortex.exe"`) {
+		t.Errorf("command not escaped in %s", raw)
+	}
+}
+
+func TestNoWSLVariantWithoutDistrosOrOnOtherOSes(t *testing.T) {
+	dir := t.TempDir()
+	e, _ := engine.New(filepath.Join(dir, "c.json"), nil)
+	for name, o := range map[string]Options{
+		"no distros": {GOOS: "windows", WSLAvailable: func() bool { return false }},
+		"linux":      {GOOS: "linux", WSLAvailable: func() bool { return true }},
+	} {
+		o.Port, o.ClientPaths, o.Exe = 47999, map[string]string{}, func() (string, error) { return `C:\x\cortex.exe`, nil }
+		r := httptest.NewRequest("GET", "/api/state", nil)
+		r.Host = good
+		r.Header.Set("X-Cortex-Token", tok)
+		w := httptest.NewRecorder()
+		New(e, tok, o).ServeHTTP(w, r)
+		var st stateJSON
+		json.NewDecoder(w.Body).Decode(&st)
+		if st.MCP.Command == "" || st.MCP.ClaudeCodeWSL != "" {
+			t.Errorf("%s: %+v", name, st.MCP)
+		}
+	}
+}
+
+func TestConnectClients(t *testing.T) {
+	en := setup(t)
+	post := func(body string) *httptest.ResponseRecorder {
+		return en.do("POST", "/api/connect", good, tok, "application/json", body)
+	}
+	status := func(id string) clientState {
+		for _, c := range en.state(t).MCP.Clients {
+			if c.ID == id {
+				return c
+			}
+		}
+		t.Fatalf("no client %s", id)
+		return clientState{}
+	}
+
+	// Neither client is installed: no folder, no button, and POST refuses without creating it.
+	if c := status("cursor"); c.Available {
+		t.Error("cursor available without its folder")
+	}
+	if w := post(`{"client":"cursor"}`); w.Code != 400 || !strings.Contains(w.Body.String(), "by hand") {
+		t.Errorf("uninstalled: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(filepath.Dir(en.clients["cursor"])); err == nil {
+		t.Error("the client's folder was created")
+	}
+
+	// Installed, with other settings in the file.
+	os.MkdirAll(filepath.Dir(en.clients["cursor"]), 0o755)
+	orig := `{"mcpServers": {"other": {"command": "x"}}, "keep":  [1, 2]}`
+	os.WriteFile(en.clients["cursor"], []byte(orig), 0o600)
+	if c := status("cursor"); !c.Available || c.Status != "" {
+		t.Errorf("before = %+v", c)
+	}
+	if w := post(`{"client":"cursor"}`); w.Code != 200 {
+		t.Fatalf("connect: %d %s", w.Code, w.Body)
+	}
+	if c := status("cursor"); c.Status != "connected" {
+		t.Errorf("after = %+v", c)
+	}
+	got, _ := os.ReadFile(en.clients["cursor"])
+	if !strings.Contains(string(got), `"other": {"command": "x"}`) || !strings.Contains(string(got), `[1, 2]`) {
+		t.Errorf("file = %s", got)
+	}
+	if bak, _ := os.ReadFile(en.clients["cursor"] + ".bak"); string(bak) != orig {
+		t.Errorf("bak = %s", bak)
+	}
+
+	// A file that is not an object is refused and left alone.
+	os.MkdirAll(filepath.Dir(en.clients["claude-desktop"]), 0o755)
+	os.WriteFile(en.clients["claude-desktop"], []byte(`[1]`), 0o600)
+	if w := post(`{"client":"claude-desktop"}`); w.Code != 400 || !strings.Contains(w.Body.String(), "by hand") {
+		t.Errorf("refusal: %d %s", w.Code, w.Body)
+	}
+	if got, _ := os.ReadFile(en.clients["claude-desktop"]); string(got) != `[1]` {
+		t.Errorf("file changed: %s", got)
+	}
+	if c := status("claude-desktop"); c.Error == "" {
+		t.Error("the problem is not reported in the state")
+	}
+
+	for body, code := range map[string]int{`{"client":"vscode"}`: 400, `{}`: 400, `{"client":"cursor","x":1}`: 400, `nope`: 400} {
+		if w := post(body); w.Code != code {
+			t.Errorf("%s: %d", body, w.Code)
+		}
+	}
+}
+
+func TestConnectGoesThroughTheGuard(t *testing.T) {
+	en := setup(t)
+	os.MkdirAll(filepath.Dir(en.clients["cursor"]), 0o755)
+	body := `{"client":"cursor"}`
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"no token":    en.do("POST", "/api/connect", good, "", "application/json", body),
+		"wrong token": en.do("POST", "/api/connect", good, "nope", "application/json", body),
+		"bad host":    en.do("POST", "/api/connect", "evil.example", tok, "application/json", body),
+		"bad type":    en.do("POST", "/api/connect", good, tok, "text/plain", body),
+		"get":         en.do("GET", "/api/connect", good, tok, "", ""),
+	} {
+		if w.Code == 200 {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := os.Stat(en.clients["cursor"]); err == nil {
+		t.Error("a config file was written without passing the guard")
 	}
 }
