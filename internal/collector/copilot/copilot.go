@@ -4,7 +4,9 @@
 // <User dir>/globalStorage/emptyWindowChatSessions/.
 //
 // Older VS Code versions write a single JSON snapshot (.json); newer ones write
-// an append-only JSONL mutation log (.jsonl) that must be replayed.
+// an append-only JSONL mutation log (.jsonl) that must be replayed. Recent
+// builds also keep a turn-level copy in globalStorage/github.copilot-chat/
+// session-store.db (see sessionstore.go).
 package copilot
 
 import (
@@ -33,6 +35,9 @@ type Collector struct {
 	// distros changes while Cortex runs.
 	extraRoots func() []string
 	seen       collector.Seen
+	// fileIDs remembers the session id of every chatSessions file parsed so
+	// far (path -> id), so ids of files skipped as unchanged still count.
+	fileIDs map[string]string
 }
 
 var products = []string{"Code", "Code - Insiders", "VSCodium"}
@@ -78,7 +83,7 @@ func (c *Collector) Detect() []string {
 	return found
 }
 
-func (c *Collector) Reset() { c.seen.Reset() }
+func (c *Collector) Reset() { c.seen.Reset(); c.fileIDs = nil }
 
 // Collect skips files whose modification time and size are unchanged since
 // they were last parsed.
@@ -99,6 +104,14 @@ func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
 				continue
 			}
 			c.seen.Mark(f.path)
+			if len(s.Messages) > 0 {
+				if c.fileIDs == nil {
+					c.fileIDs = map[string]string{}
+				}
+				c.fileIDs[f.path] = s.ID
+			} else {
+				delete(c.fileIDs, f.path)
+			}
 			if f.workspaceDir != "" {
 				s.Cwd = workspaceCwd(f.workspaceDir)
 			}
@@ -106,6 +119,7 @@ func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
 				fn(s)
 			}
 		}
+		c.collectStore(root, fn, warn)
 	}
 }
 
