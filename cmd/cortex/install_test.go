@@ -74,7 +74,7 @@ func TestInstallUnsupportedSystems(t *testing.T) {
 			"uninstall": func(a []string, b *bytes.Buffer) error { return uninstallCmd(a, b, b, env) },
 		} {
 			err := f(nil, &out)
-			if err == nil || !strings.Contains(err.Error(), "manual") || !strings.Contains(err.Error(), "PATH") {
+			if err == nil || !strings.Contains(err.Error(), "install.sh") || !strings.Contains(err.Error(), "PATH") {
 				t.Errorf("%s on %s: err = %v", name, goos, err)
 			}
 		}
