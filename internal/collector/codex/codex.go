@@ -30,6 +30,8 @@ import (
 
 const ID = "codex"
 
+const compressedSuffix = ".zst"
+
 type Collector struct {
 	Roots []string
 	// extraRoots is evaluated on every call because the set of running WSL
@@ -108,14 +110,32 @@ func (c *Collector) Collect(fn func(*session.Session), warn func(error)) {
 				warn(fmt.Errorf("%s: %w", f, err))
 				return nil
 			}
-			// A rollout that is still being compressed is .jsonl.zst and not matched: no stdlib zstd.
-			if d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
+			if d.IsDir() || !isRollout(d.Name()) || hiddenByPlain(f) {
 				return nil
 			}
 			c.collectFile(f, fn, warn)
 			return nil
 		})
 	}
+}
+
+// isRollout matches plain and compressed rollout names. Codex compresses cold
+// rollouts to rollout-*.jsonl.zst; temp files of that job have other names.
+func isRollout(name string) bool {
+	return strings.HasPrefix(name, "rollout-") &&
+		(strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, compressedSuffix))
+}
+
+// hiddenByPlain tells whether f is a .jsonl.zst whose plain .jsonl sibling
+// exists. Codex is compressing it (it removes the plain file only after
+// publishing the .zst) or is re-expanding it to append, and its own readers
+// prefer the plain file, so the session is emitted once, from that one.
+func hiddenByPlain(f string) bool {
+	if !strings.HasSuffix(f, compressedSuffix) {
+		return false
+	}
+	_, err := os.Stat(strings.TrimSuffix(f, compressedSuffix))
+	return err == nil
 }
 
 func (c *Collector) collectFile(f string, fn func(*session.Session), warn func(error)) {
@@ -165,7 +185,16 @@ func ParseFile(path string) (*session.Session, error) {
 		return nil, err
 	}
 	defer f.Close()
-	s, err := Parse(f)
+	var r io.Reader = f
+	if strings.HasSuffix(path, compressedSuffix) {
+		dec, err := newDecoder(f)
+		if err != nil {
+			return nil, err
+		}
+		defer dec.Close()
+		r = &cappedReader{r: dec, left: maxDecompressed}
+	}
+	s, err := Parse(r)
 	if err != nil {
 		return nil, err
 	}
@@ -175,9 +204,9 @@ func ParseFile(path string) (*session.Session, error) {
 	return s, nil
 }
 
-// idFromName extracts the uuid from rollout-YYYY-MM-DDThh-mm-ss-<uuid>[_<rollout id>].jsonl.
+// idFromName extracts the uuid from rollout-YYYY-MM-DDThh-mm-ss-<uuid>[_<rollout id>].jsonl[.zst].
 func idFromName(name string) string {
-	name = strings.TrimSuffix(name, ".jsonl")
+	name = strings.TrimSuffix(strings.TrimSuffix(name, compressedSuffix), ".jsonl")
 	if len(name) >= 28+36 && strings.HasPrefix(name, "rollout-") {
 		return name[28 : 28+36]
 	}

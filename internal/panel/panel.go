@@ -69,7 +69,7 @@ type Options struct {
 const Header = "X-Cortex"
 
 // autostartTTL is how long the autostart setting is reused: the page polls
-// /api/state, and on Windows each lookup spawns reg.exe.
+// /api/state, and on Windows each lookup reads the registry.
 const autostartTTL = 30 * time.Second
 
 type panel struct {

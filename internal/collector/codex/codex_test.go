@@ -1,11 +1,15 @@
 package codex
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/marioolf/cortex/internal/session"
 )
 
@@ -165,5 +169,109 @@ func TestNewRootsHonourCodexHome(t *testing.T) {
 		if filepath.ToSlash(r[i]) != want[i] {
 			t.Fatalf("%v", r)
 		}
+	}
+}
+
+// writeZst stores content as Codex does: one plain zstd frame, no extra framing.
+func writeZst(t *testing.T, path string, content []byte) string {
+	t.Helper()
+	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return write(t, path, string(enc.EncodeAll(content, nil)))
+}
+
+func TestCompressedRollouts(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"rollout-2025-05-07T17-24-21-" + uuid1 + ".jsonl.zst": oldRollout,
+		"rollout-2025-10-01T10-00-00-" + uuid2 + ".jsonl.zst": newRollout,
+	} {
+		writeZst(t, filepath.Join(dir, name), []byte(content))
+	}
+	// Temp files of the compressor are not rollouts.
+	write(t, filepath.Join(dir, "rollout-compress-abc.tmp"), "x")
+	c := &Collector{Roots: []string{dir}}
+	got := map[string]string{}
+	warns := 0
+	collect := func() {
+		clear(got)
+		c.Collect(func(s *session.Session) { got[s.ID] = s.Title }, func(error) { warns++ })
+	}
+	collect()
+	if warns != 0 || got[uuid1] != "fix the parser" || got[uuid2] != "add a flag" || len(got) != 2 {
+		t.Fatalf("got %v warns=%d", got, warns)
+	}
+	collect()
+	if len(got) != 0 {
+		t.Fatalf("unchanged compressed files reported again: %v", got)
+	}
+}
+
+func TestCompressedIDFromName(t *testing.T) {
+	p := writeZst(t, filepath.Join(t.TempDir(), "rollout-2025-05-07T17-24-21-"+uuid1+".jsonl.zst"),
+		[]byte(`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}`+"\n"))
+	if s, err := ParseFile(p); err != nil || s.ID != uuid1 {
+		t.Fatalf("%v %+v", err, s)
+	}
+}
+
+func TestPlainWinsOverCompressedSibling(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "rollout-2025-10-01T10-00-00-"+uuid2+".jsonl")
+	write(t, base, newRollout)
+	writeZst(t, base+".zst", []byte(oldRollout)) // stale copy: must not be used
+	c := &Collector{Roots: []string{dir}}
+	var titles []string
+	c.Collect(func(s *session.Session) { titles = append(titles, s.Title) }, func(err error) { t.Error(err) })
+	if len(titles) != 1 || titles[0] != "add a flag" {
+		t.Fatalf("got %v", titles)
+	}
+}
+
+func TestCorruptCompressedFileIsOnlyAWarning(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "rollout-bad.jsonl.zst"), "this is not zstd at all")
+	good := writeZst(t, filepath.Join(dir, "rollout-2025-10-01T10-00-00-"+uuid2+".jsonl.zst"), []byte(newRollout))
+	// A real frame cut in half.
+	b, _ := os.ReadFile(good)
+	write(t, filepath.Join(dir, "rollout-cut.jsonl.zst"), string(b[:len(b)/2]))
+
+	c := &Collector{Roots: []string{dir}}
+	ids, warns := 0, 0
+	c.Collect(func(*session.Session) { ids++ }, func(error) { warns++ })
+	if ids != 1 || warns != 2 {
+		t.Fatalf("ids=%d warns=%d", ids, warns)
+	}
+}
+
+func TestDecompressionBombIsCapped(t *testing.T) {
+	old := maxDecompressed
+	maxDecompressed = 1 << 20
+	defer func() { maxDecompressed = old }()
+
+	// 64 MiB of one line shrinks to a few KiB.
+	bomb := bytes.Repeat([]byte("a"), 64<<20)
+	p := writeZst(t, filepath.Join(t.TempDir(), "rollout-bomb.jsonl.zst"), bomb)
+	if st, _ := os.Stat(p); st.Size() > 1<<20 {
+		t.Fatalf("fixture is not small: %d", st.Size())
+	}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	start := time.Now()
+	_, err := ParseFile(p)
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("err = %v", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("took %v", d)
+	}
+	// TotalAlloc counts everything allocated, so it bounds the work done.
+	if got := after.TotalAlloc - before.TotalAlloc; got > 48<<20 {
+		t.Errorf("allocated %d MiB", got>>20)
 	}
 }

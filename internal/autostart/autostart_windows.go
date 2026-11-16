@@ -3,25 +3,15 @@
 package autostart
 
 import (
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"syscall"
+
+	"golang.org/x/sys/windows/registry"
 )
 
-func regCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("reg.exe", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	return cmd
-}
-
-func reg(args ...string) error { return regCmd(args...).Run() }
-
-// registered returns the output of the query for the Cortex value.
-func registered() (string, bool) {
-	out, err := regCmd("query", runKey, "/v", valueName).Output()
-	return string(out), err == nil
-}
+// runKeyPath is a variable so that a test can point the code at a throwaway key.
+var runKeyPath = runKey
 
 // Enable registers the running program.
 func Enable() error {
@@ -34,25 +24,39 @@ func Enable() error {
 
 // EnableFor registers exe, for the installer, which sets up the installed copy
 // from another one.
-func EnableFor(exe string) error {
-	return reg(regArgs(exe)...)
+func EnableFor(exe string) error { return enableAt(runKeyPath, exe) }
+
+func enableAt(keyPath, exe string) error {
+	// CreateKey opens the key when it exists, as the Run key always does.
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, keyPath, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetStringValue(valueName, runValueFor(exe))
 }
 
-func Disable() error {
-	if _, ok := registered(); !ok {
+func Disable() error { return disableAt(runKeyPath) }
+
+func disableAt(keyPath string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, keyPath, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
 		return nil
 	}
-	return reg("delete", runKey, "/v", valueName, "/f")
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	if err := k.DeleteValue(valueName); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Enabled reports whether the registered command starts THIS program: an
 // entry that points at another copy (the installed one, seen from a download)
 // does not count.
 func Enabled() bool {
-	out, ok := registered()
-	if !ok {
-		return false
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return false
@@ -60,5 +64,15 @@ func Enabled() bool {
 	if r, err := filepath.EvalSymlinks(exe); err == nil { // long names instead of 8.3 ones
 		exe = r
 	}
-	return registeredIsThis(out, exe)
+	return enabledAt(runKeyPath, exe)
+}
+
+func enabledAt(keyPath, exe string) bool {
+	k, err := registry.OpenKey(registry.CURRENT_USER, keyPath, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer k.Close()
+	cmd, _, err := k.GetStringValue(valueName)
+	return err == nil && registeredIsThis(cmd, exe)
 }

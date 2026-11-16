@@ -5,12 +5,10 @@ import (
 	"testing"
 )
 
-func TestRegArgs(t *testing.T) {
-	got := regArgs(`C:\Program Files\Cortex\cortex.exe`)
-	want := []string{"add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, "/v", "Cortex", "/t", "REG_SZ",
-		"/d", `"C:\Program Files\Cortex\cortex.exe" run -no-browser`, "/f"}
-	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Errorf("got %q, want %q", got, want)
+func TestRunValueFor(t *testing.T) {
+	got := runValueFor(`C:\Program Files\Cortex\cortex.exe`)
+	if want := `"C:\Program Files\Cortex\cortex.exe" run -no-browser`; got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 }
 
@@ -40,39 +38,34 @@ func TestDesktopFile(t *testing.T) {
 	}
 }
 
-func TestParseRunValueAndRegisteredIsThis(t *testing.T) {
-	out := "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n" +
-		"    Cortex    REG_SZ    \"C:\\Users\\Ana\\AppData\\Local\\Programs\\Cortex\\cortex.exe\" run -no-browser\r\n\r\n"
-	cmd, ok := parseRunValue(out)
-	if !ok || cmd != `"C:\Users\Ana\AppData\Local\Programs\Cortex\cortex.exe" run -no-browser` {
-		t.Fatalf("cmd = %q %v", cmd, ok)
-	}
+func TestRegisteredIsThis(t *testing.T) {
+	const installed = `C:\Users\José\AppData\Local\Programs\Cortex\cortex.exe`
+	cmd := runValueFor(installed)
 	for exe, want := range map[string]bool{
-		`C:\Users\Ana\AppData\Local\Programs\Cortex\cortex.exe`: true,
-		`c:\users\ana\appdata\local\programs\cortex\CORTEX.EXE`: true,
-		`C:/Users/Ana/AppData/Local/Programs/Cortex/cortex.exe`: true,
-		`C:\Users\Ana\Downloads\cortex.exe`:                     false,
+		installed: true,
+		`c:\users\josÉ\appdata\local\programs\cortex\CORTEX.EXE`: true, // case, also of accents
+		`C:/Users/José/AppData/Local/Programs/Cortex/cortex.exe`: true,
+		`C:\Users\Jose\AppData\Local\Programs\Cortex\cortex.exe`: false, // no accent
+		`C:\Users\José\Downloads\cortex.exe`:                     false,
 	} {
-		if got := registeredIsThis(out, exe); got != want {
+		if got := registeredIsThis(cmd, exe); got != want {
 			t.Errorf("registeredIsThis(%q) = %v", exe, got)
 		}
 	}
-	if _, ok := parseRunValue("ERROR: The system was unable to find the specified registry key or value."); ok {
-		t.Error("error text parsed as a value")
+	if registeredIsThis("", `C:\x\cortex.exe`) {
+		t.Error("empty command counts as registered")
 	}
-	if registeredIsThis("ERROR: nothing", `C:\x\cortex.exe`) {
-		t.Error("no value counts as registered")
-	}
-	// Unquoted command with spaces in the path.
-	if got := commandExe(`C:\Program Files\Cortex\cortex.exe run -no-browser`); got != `C:\Program Files\Cortex\cortex.exe` {
-		t.Errorf("commandExe = %q", got)
-	}
-	// Mangled accented paths on both sides cannot be told apart: trust the entry.
-	mangled := "    Cortex    REG_SZ    \"C:\\Users\\Jos\xe9\\cortex.exe\" run -no-browser\r\n"
-	if !registeredIsThis(mangled, "C:\\Users\\Jos\u00e9\\cortex.exe") {
-		t.Error("accented path not trusted")
-	}
-	if registeredIsThis(mangled, `C:\Users\Jose\cortex.exe`) {
-		t.Error("a plain path matched a mangled one")
+}
+
+func TestCommandExe(t *testing.T) {
+	for cmd, want := range map[string]string{
+		`"C:\Program Files\Cortex\cortex.exe" run -no-browser`: `C:\Program Files\Cortex\cortex.exe`,
+		`C:\Program Files\Cortex\cortex.exe run -no-browser`:   `C:\Program Files\Cortex\cortex.exe`, // unquoted, spaces
+		`C:\x\cortex run`: `C:\x\cortex`,
+		`  `:              "",
+	} {
+		if got := commandExe(cmd); got != want {
+			t.Errorf("commandExe(%q) = %q, want %q", cmd, got, want)
+		}
 	}
 }

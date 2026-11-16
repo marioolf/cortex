@@ -19,12 +19,18 @@ export LC_ALL=C
 cd "$root"
 main=$(go list -m)
 : >"$work/all"
+: >"$work/subs"
 for goos_arch in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
   CGO_ENABLED=0 GOOS=${goos_arch%/*} GOARCH=${goos_arch#*/} \
     go list -deps -f '{{with .Module}}{{.Path}} {{.Version}} {{.Dir}}{{end}}' ./cmd/cortex >>"$work/all"
+  # Packages below their module's root that carry a licence file of their own
+  # (a vendored xxhash, a copy of snappy): the module's top-level file does not cover them.
+  CGO_ENABLED=0 GOOS=${goos_arch%/*} GOARCH=${goos_arch#*/} \
+    go list -deps -f '{{with .Module}}{{if ne .Dir $.Dir}}{{.Path}} {{.Version}} {{.Dir}} {{$.Dir}}{{end}}{{end}}' ./cmd/cortex >>"$work/subs"
 done
 # One line per module (the same module shows up for every target); the program's own module is not third-party.
 grep -v '^$' "$work/all" | grep -v "^$main " | sort -u >"$work/modules"
+grep -v '^$' "$work/subs" | grep -v "^$main " | sort -u >"$work/subs.sorted"
 
 {
   cat <<'HEADER'
@@ -57,6 +63,22 @@ HEADER
       exit 1
     fi
   done <"$work/modules"
+  # Licence files of compiled sub-packages, shown relative to their module.
+  while read -r path version dir pkgdir; do
+    rel=${pkgdir#"$dir"/}
+    for f in $(ls -1 "$pkgdir" | sort); do
+      [ -f "$pkgdir/$f" ] || continue
+      lower=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
+      case $lower in
+        licen[sc]e* | copying* | notice*)
+          printf '\n## %s %s: %s\n\n### %s\n\n~~~~~~~~\n' "$path" "$version" "$rel" "$f"
+          cat "$pkgdir/$f"
+          [ -z "$(tail -c1 "$pkgdir/$f")" ] || echo
+          printf '~~~~~~~~\n'
+          ;;
+      esac
+    done
+  done <"$work/subs.sorted"
   printf '\n## Go standard library\n\n### LICENSE\n\n~~~~~~~~\n'
   cat "$(go env GOROOT)/LICENSE"
   printf '~~~~~~~~\n'
