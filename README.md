@@ -13,11 +13,11 @@ Cortex saves every conversation you have with AI tools as Markdown notes in a si
 ![Platforms: Windows | macOS | Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 ![MCP server](https://img.shields.io/badge/MCP-server-5B2BD9)
 ![local-first](https://img.shields.io/badge/local--first-no%20cloud-0FB5A6)
-<!-- Add a release badge after v0.1.0: [![Release](https://img.shields.io/github/v/release/marioolf/cortex)](https://github.com/marioolf/cortex/releases) -->
+[![Release](https://img.shields.io/github/v/release/marioolf/cortex)](https://github.com/marioolf/cortex/releases)
 
-[Why Cortex](#why-cortex) ·
 [Install](#install) ·
-[Quick start](#quick-start) ·
+[First five minutes](#then) ·
+[How it works](#how-it-works) ·
 [Connect your AI tools](#connect-your-ai-tools-mcp) ·
 [Web chats](#web-chats) ·
 [Privacy & security](#privacy--security) ·
@@ -26,6 +26,42 @@ Cortex saves every conversation you have with AI tools as Markdown notes in a si
 </div>
 
 ---
+
+## Install
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/marioolf/cortex/main/install.ps1 | iex
+```
+
+**macOS / Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/marioolf/cortex/main/install.sh | sh
+```
+
+No Go or any other dependency is needed. To read the script before running it: `curl -fsSL https://raw.githubusercontent.com/marioolf/cortex/main/install.sh -o install.sh && less install.sh` (on Windows, open the same address with `install.ps1` in your browser). Each script downloads the release for your system, checks its SHA-256 against the release's `checksums.txt`, installs Cortex and starts it. The binaries are **not code-signed** yet. To download and verify by hand instead, or to pin a version, see [docs/install.md](docs/install.md).
+
+## Then
+
+1. **The panel opens** in your browser at <http://127.0.0.1:47821/>. Cortex has started saving your conversations and checks again every 30 seconds. (On Windows it lives in the notification area; click its icon to reopen the panel.)
+2. **Open the vault folder** (`~/Cortex` by default, or **Open folder** in the panel) in [Obsidian](https://obsidian.md/) or any Markdown reader.
+3. **Connect your AI tools** from the panel's **Connect AI tools** tab, so that they can search the vault. For example, for Claude Code:
+
+   ```sh
+   claude mcp add --scope user cortex -- /path/to/cortex mcp
+   ```
+
+   The tab shows the exact command, with the right path, for each tool. More in [Connect your AI tools](#connect-your-ai-tools-mcp).
+
+Cortex starts at login (the installers set this up) and never contacts the Internet. To update, run the installer again; to remove it, see [Update / Uninstall](#update--uninstall).
+
+<div align="center">
+<img src="docs/assets/panel.png" alt="The Cortex control panel: sources, projects, vault and startup in one window (invented sample data)" width="800">
+<br>
+<sub>The control panel, with invented sample data.</sub>
+</div>
 
 ## Why Cortex
 
@@ -50,12 +86,6 @@ Everything runs on your machine. There is no account and no cloud service. Nothi
 - **Optional summaries** of finished conversations, written by an AI tool you already have installed.
 - **Single binary**, no runtime, no telemetry, no update checks.
 
-<div align="center">
-<img src="docs/assets/panel.png" alt="The Cortex control panel: sources, projects, vault and startup in one window (invented sample data)" width="800">
-<br>
-<sub>The control panel, with invented sample data.</sub>
-</div>
-
 ## How it works
 
 <picture>
@@ -79,61 +109,6 @@ Everything runs on your machine. There is no account and no cloud service. Nothi
 | ChatGPT, Claude and Gemini (web) | browser extension | invented HTML only; never run against the live sites or in a real browser |
 
 Everything below Claude Code and Copilot has only been tested with made-up samples. Expect rough edges, and please [report sessions that come out wrong](https://github.com/marioolf/cortex/issues/new?template=bug_report.md). Gemini has no export that Cortex reads; use the extension.
-
-## Install
-
-> [!NOTE]
-> There is no tagged release yet. Until the first one is published, [build from source](#build-from-source) (one `go build` command).
-
-Download the file for your system from the [Releases page](https://github.com/marioolf/cortex/releases), next to `checksums.txt` (SHA-256 of every file; compare with `sha256sum -c checksums.txt --ignore-missing`, or with `Get-FileHash` on Windows). Releases are not code-signed yet, so Windows and macOS warn about the program. Full details, including the exact warnings, are in [docs/install.md](docs/install.md).
-
-### Windows
-
-1. Download `cortex_VERSION_windows_amd64.zip` (`arm64` for ARM machines) and unzip it.
-2. Double-click `cortex.exe`. Windows SmartScreen will most likely stop it with "Windows protected your PC" and an "Unknown publisher". This happens because the program has no code-signing certificate and is new to Microsoft's reputation system, not because SmartScreen found anything in it. Click **More info**, then **Run anyway**. If you would rather not run a program you cannot verify, [build it from source](#build-from-source).
-3. Your browser opens the control panel. Click **Install** at the top: Cortex copies itself to `%LOCALAPPDATA%\Programs\Cortex\cortex.exe`, adds a Start Menu shortcut, registers itself to start at login and restarts from there. (`cortex.exe install` does the same from a terminal.)
-
-Cortex has no window of its own: look for its icon in the notification area. A click opens the panel; the right-click menu has Open Cortex, Pause/Resume and Quit.
-
-### macOS and Linux
-
-Download `cortex_VERSION_darwin_arm64.tar.gz` (Apple silicon), `darwin_amd64` (Intel), `linux_amd64` or `linux_arm64`, extract it, put `cortex` in a folder on your `PATH` (for example `~/.local/bin`) and run `cortex`. There is no installer on these systems yet. The first `run` registers Cortex to start at login (a launch agent on macOS, an XDG autostart entry on Linux) for the binary's location at that moment, so put it in its final place first, or pass `-no-autostart`.
-
-macOS Gatekeeper blocks programs that are not signed and notarized when they carry the "quarantine" mark that browsers put on downloads. A file extracted with `tar` in the Terminal does not usually get the mark; one opened from Finder may be refused. If you decide to trust the file, allow it in System Settings, Privacy & Security ("Open Anyway"), or run `xattr -d com.apple.quarantine /path/to/cortex`. (This wording comes from Apple's documentation and has not been checked on a Mac.) More in [docs/install.md](docs/install.md#macos-and-linux).
-
-## Quick start
-
-```
-cortex            # same as `cortex run`: saves everything, keeps watching, opens the panel
-```
-
-1. Start Cortex. It saves every conversation it finds, then checks again every 30 seconds. The panel opens at `http://127.0.0.1:47821/`.
-2. Open the vault (default `~/Cortex`, or **Open folder** in the panel) in Obsidian or any Markdown reader.
-3. [Connect your AI tools](#connect-your-ai-tools-mcp) so that they can search it.
-
-`cortex sync` does one round and exits. Other commands: `import`, `summarize`, `mcp`, `install`, `uninstall`, `version`. Options for `run` (`-no-browser`, `-port`, `-no-autostart`, `-no-tray`, `-config`) and everything the panel does are described in [docs/build-and-run.md](docs/build-and-run.md#run).
-
-A note looks like this ([more on the format](docs/notes.md)):
-
-```markdown
----
-source: "claude-code"
-session: "0b6c1f2e-..."
-project: "myapp"
-cwd: "/home/me/code/myapp"
-started: 2026-05-01T09:30:00Z
-generated: true
----
-
-# Fix the login redirect
-
-<!-- cortex:start -->
-## User · 2026-05-01 11:30
-
-Why does the login page redirect twice?
-...
-<!-- cortex:end -->
-```
 
 ## Connect your AI tools (MCP)
 
@@ -203,7 +178,12 @@ Every field, including `extension_token` and the `summaries` block, is in [docs/
 
 ## Update / Uninstall
 
-Cortex never checks for updates. To update on Windows, run the new `cortex.exe` while the installed one is running: it asks the running Cortex to quit and starts in its place, and the panel's **Install** banner replaces the installed file. On macOS and Linux, replace the `cortex` file. To uninstall on Windows, run `cortex uninstall` (add `-purge` to also remove the config file and the log); the vault is never removed, so delete it yourself if you want the notes gone. On macOS and Linux, turn off "Start Cortex when I log in" in the panel and delete the binary. The long version, with every edge case: [docs/install.md](docs/install.md#update).
+Cortex never checks for updates. To update, run the install command again: the new binary replaces the old one and takes over from a running Cortex. To uninstall:
+
+- **Windows:** `& "$env:LOCALAPPDATA\Programs\Cortex\cortex.exe" uninstall` (add `-purge` to also remove the config file and the log).
+- **macOS / Linux:** turn off "Start Cortex when I log in" in the panel, quit Cortex, and delete the binary (`rm ~/.local/bin/cortex`).
+
+The vault is never removed; delete it yourself if you want the notes gone. Every edge case: [docs/install.md](docs/install.md#update).
 
 ## Build from source
 
@@ -214,15 +194,7 @@ go build -o cortex ./cmd/cortex
 ./cortex
 ```
 
-On Windows, build with `-ldflags "-H windowsgui"` so that starting Cortex at login or by double click opens no console window (this is how releases are built; `scripts/release.sh VERSION OUTDIR` builds and packages all of them, reproducibly):
-
-```sh
-go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
-```
-
-The Windows icon, version information and manifest are embedded from the committed `cmd/cortex/rsrc_windows_*.syso` files (generated for version 0.0.0 with the standard library only: `go run ./tools/winres -ico winres/cortex.ico -version 0.0.0 -out-dir cmd/cortex`; the release script regenerates them with the release version).
-
-Notes on that build (how `cortex.exe sync` behaves in PowerShell, where the log goes, start failures) are in [docs/build-and-run.md](docs/build-and-run.md#build-from-source).
+`scripts/release.sh VERSION OUTDIR` builds and packages every release asset, reproducibly. Windows build flags, the embedded resources and how `cortex.exe` behaves in PowerShell: [docs/build-and-run.md](docs/build-and-run.md#build-from-source).
 
 ## Status & roadmap
 
@@ -230,8 +202,8 @@ Early development. Cortex captures conversations from the sources above, either 
 
 - **Verified against real data:** Claude Code sessions and, partly, Copilot Chat session files (without messages). Everything else was written from source code or documentation and tested with invented samples.
 - **Web chats:** the extension's selectors come from open-source exporters and have **not been tested against the live sites** or in a real browser; the sites change their HTML without notice. The import formats have not been tried against a real export.
-- **Windows:** the installer, tray icon, start at login and the SmartScreen flow have not been verified by hand on a real Windows machine (the test suite and builds run on Windows in CI). The macOS Gatekeeper text has not been checked on a Mac.
-- **Not yet:** code-signed releases, an extension in the browser stores, an installer on macOS and Linux, and a first tagged release.
+- **Installers:** `install.sh` and `install.ps1` were tested against locally served fake release assets (download, checksum, refusal of a corrupted file), but never against a published release, and `install.sh` never on macOS. The Windows install step, tray icon and start at login have not been verified by hand on a real Windows machine (the test suite and builds run on Windows in CI). The macOS Gatekeeper text has not been checked on a Mac.
+- **Not yet:** code-signed releases and an extension in the browser stores.
 
 Bug reports with a bit of the log are the most useful help right now.
 
@@ -253,7 +225,7 @@ Cortex writes it again the next time its conversation changes or Cortex restarts
 It redacts common secret formats before writing, but redaction is best-effort. See [docs/privacy.md](docs/privacy.md).
 
 **Why does Windows or macOS warn me about it?**
-Releases are not code-signed yet. See [Install](#install).
+Releases are not code-signed yet. See [docs/install.md](docs/install.md).
 
 **Can I stop it capturing a project?**
 Yes: turn the project off in the panel, or list it in `excluded_projects`. Notes already written are never deleted.

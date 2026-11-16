@@ -59,6 +59,19 @@ jobs:
         run: |
           go run ./tools/winres -ico winres/cortex.ico -version 0.0.0 -out-dir cmd/cortex
           git diff --exit-code -- cmd/cortex/ || { echo "the .syso files are out of date: run go run ./tools/winres and commit them" >&2; exit 1; }
+      - name: Installers parse (install.sh)
+        # shellcheck is preinstalled on ubuntu-latest.
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sh -n install.sh
+          shellcheck install.sh
+      - name: Installers parse (install.ps1)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors)
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
       - name: Build
         if: matrix.os != 'windows-latest'
         run: go build -o dist/ ./cmd/cortex

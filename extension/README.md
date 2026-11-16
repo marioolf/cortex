@@ -9,9 +9,14 @@ is **not in any browser store yet**: you load it unpacked, as below.
 
 ## Install (unpacked)
 
-1. Open `chrome://extensions` (Edge: `edge://extensions`), turn on **Developer mode**.
-2. Click **Load unpacked** and choose this `extension/` folder.
-3. Pin the icon if you like. A red `!` on it means Cortex is not reachable or the
+1. Get the folder. From a release: download `cortex-extension_<version>.zip` from the
+   [Releases page](https://github.com/marioolf/cortex/releases) (it is listed in
+   `checksums.txt`) and unzip it; it contains an `extension/` folder. From a clone
+   of the repository, use its `extension/` folder.
+2. Open `chrome://extensions` (Edge: `edge://extensions`), turn on **Developer mode**.
+3. Click **Load unpacked** and choose the `extension/` folder. Keep that folder in a
+   place you will not delete: the browser loads the extension from it.
+4. Pin the icon if you like. A red `!` on it means Cortex is not reachable or the
    pairing code is wrong.
 
 ## Pair it with Cortex

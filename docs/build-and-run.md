@@ -22,6 +22,13 @@ copy of `manifest.json`):
 go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
 ```
 
+The Windows icon, version information and manifest are embedded from the
+committed `cmd/cortex/rsrc_windows_*.syso` files (generated for version 0.0.0
+with the standard library only: `go run ./tools/winres -ico winres/cortex.ico
+-version 0.0.0 -out-dir cmd/cortex`; the release script regenerates them with the
+release version). The release script also attaches `install.sh` and
+`install.ps1` and lists them in `checksums.txt`.
+
 Cortex then runs without a window and is stopped from the tray menu or the
 panel's "Quit Cortex" button. A program built this way does not make PowerShell or an interactive `cmd`
 prompt wait: `cortex.exe sync` typed there can return to the prompt at once,
@@ -36,6 +43,8 @@ creates the config folder for it. A start that fails with no console to print
 on (the Windows build) also shows a message box with the error and the log's path.
 
 ## Run
+
+Commands: `run` (the default), `sync`, `import`, `summarize`, `mcp`, `install`, `uninstall`, `version`.
 
 Running `cortex` with no arguments is the same as `cortex run`. It saves every
 conversation once, then checks again every 30 seconds, and opens the control

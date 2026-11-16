@@ -49,7 +49,7 @@ var realInstallEnv = installEnv{goos: runtime.GOOS, new: func(configPath string,
 func panelAddr(port int) string { return "127.0.0.1:" + strconv.Itoa(port) }
 
 // errManual is what install and uninstall answer where there is no installer.
-var errManual = errors.New("installation is manual on this system for now: put the cortex binary somewhere on your PATH; starting at login is handled from the control panel")
+var errManual = errors.New("cortex install is for Windows; on this system use the installer instead: curl -fsSL https://raw.githubusercontent.com/marioolf/cortex/main/install.sh | sh (or put the cortex binary somewhere on your PATH; starting at login is handled from the control panel)")
 
 // newInstaller describes the installation of the running program. quit may be
 // nil when the caller never asks another Cortex to stop.

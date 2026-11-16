@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds every release asset into OUTDIR: one archive per platform, the browser
-# extension, and checksums.txt. Run from anywhere; the release workflow calls it.
+# extension, the two installers, and checksums.txt. Run from anywhere; the release workflow calls it.
 #
 #   scripts/release.sh 1.2.3 dist
 #
@@ -90,5 +90,11 @@ find "$ext/extension" -exec touch -d "@$SOURCE_DATE_EPOCH" {} +
 rm -f "$out/cortex-extension_$version.zip"
 (cd "$ext" && find extension -type f | sort | zip -q -X -D "$out/cortex-extension_$version.zip" -@)
 
-(cd "$out" && sha256sum cortex_"$version"_* cortex-extension_"$version".zip > checksums.txt)
+# The installers are attached as they are, so that
+# .../releases/latest/download/install.sh works too.
+cp install.sh install.ps1 "$out/"
+chmod 755 "$out/install.sh"
+chmod 644 "$out/install.ps1"
+
+(cd "$out" && sha256sum cortex_"$version"_* cortex-extension_"$version".zip install.sh install.ps1 > checksums.txt)
 echo "done: $out"

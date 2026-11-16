@@ -31,3 +31,14 @@ Notes can contain text written by third parties (web pages, files, command
 output that was quoted in a conversation). An agent reading the vault should
 treat it as data, not as instructions.
 
+
+## Other points
+
+- **No network by default.** Cortex never checks for updates or contacts the
+  Internet. The control panel listens on `127.0.0.1` and only accepts
+  connections from your own machine.
+- **Tool output and model thinking are not saved**; tool calls are kept as one
+  line each.
+- **Pairing code.** The extension's `extension_token` in the config file is like
+  a password: whoever has it, and can reach `127.0.0.1`, can add notes to your
+  vault.
