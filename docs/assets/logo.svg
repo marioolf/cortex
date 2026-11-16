@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<title>Cortex</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1640"/><stop offset=".52" stop-color="#5B2BD9"/><stop offset="1" stop-color="#0FB5A6"/></linearGradient>
+<radialGradient id="glow" cx="256" cy="256" r="230" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#C9B8FF" stop-opacity=".55"/><stop offset=".55" stop-color="#8E6CFF" stop-opacity=".16"/><stop offset="1" stop-color="#8E6CFF" stop-opacity="0"/></radialGradient>
+<filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="14"/></filter>
+</defs>
+<rect width="512" height="512" rx="113" fill="url(#bg)"/>
+<rect width="512" height="512" rx="113" fill="url(#glow)"/>
+<g stroke="#E6FFFB" stroke-opacity=".55" stroke-width="5" stroke-linecap="round"><line x1="256" y1="256" x2="326.4" y2="123.6"/><line x1="256" y1="256" x2="128.8" y2="176.5"/><line x1="256" y1="256" x2="128.8" y2="335.5"/><line x1="256" y1="256" x2="326.4" y2="388.4"/></g>
+<g fill="none" stroke-linecap="round" stroke-width="24">
+<path d="M383.21 176.51A150 150 0 1 0 383.21 335.49" stroke="#FFFFFF"/>
+<path d="M350.98 196.65A112 112 0 1 0 350.98 315.35" stroke="#E6FFFB" stroke-opacity=".6"/>
+<path d="M318.76 216.79A74 74 0 1 0 318.76 295.21" stroke="#E6FFFB" stroke-opacity=".3"/>
+</g>
+<circle cx="326.4" cy="123.6" r="16" fill="#8CF5E6" stroke="#FFFFFF" stroke-width="6"/><circle cx="128.8" cy="176.5" r="16" fill="#8CF5E6" stroke="#FFFFFF" stroke-width="6"/><circle cx="128.8" cy="335.5" r="16" fill="#8CF5E6" stroke="#FFFFFF" stroke-width="6"/><circle cx="326.4" cy="388.4" r="16" fill="#8CF5E6" stroke="#FFFFFF" stroke-width="6"/>
+<circle cx="256" cy="256" r="40" fill="#FFFFFF" filter="url(#blur)" opacity=".85"/>
+<circle cx="256" cy="256" r="27" fill="#FFFFFF"/>
+</svg>

@@ -1,548 +1,136 @@
+<div align="center">
+
+<img src="docs/assets/logo-256.png" alt="Cortex logo" width="128" height="128">
+
 # Cortex
 
-Cortex saves your conversations with AI tools as Markdown notes in a folder (the
-vault). The context you build up with different tools ends up scattered across
-their private storage; Cortex gathers it in one place you can read yourself,
-open with Obsidian or any Markdown reader, and that any AI agent can look up.
-It runs locally and nothing leaves your machine, unless you switch on the optional
-summaries (see "Summaries"), which are off by default.
+**One local memory for all your AI tools.**<br>
+Cortex saves every conversation you have with AI tools as Markdown notes in a single folder, and lets any AI agent search that folder.
 
-## Status
+[![CI](https://github.com/marioolf/cortex/actions/workflows/ci.yml/badge.svg)](https://github.com/marioolf/cortex/actions/workflows/ci.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/marioolf/cortex)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platforms: Windows | macOS | Linux](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+![MCP server](https://img.shields.io/badge/MCP-server-5B2BD9)
+![local-first](https://img.shields.io/badge/local--first-no%20cloud-0FB5A6)
+<!-- Add a release badge after v0.1.0: [![Release](https://img.shields.io/github/v/release/marioolf/cortex)](https://github.com/marioolf/cortex/releases) -->
 
-Early development. Cortex captures conversations from the sources below, either
-once with `cortex sync` or continuously in the background with `cortex run`,
-which also serves a local control panel.
+[Why Cortex](#why-cortex) ·
+[Install](#install) ·
+[Quick start](#quick-start) ·
+[Connect your AI tools](#connect-your-ai-tools-mcp) ·
+[Web chats](#web-chats) ·
+[Privacy & security](#privacy--security) ·
+[FAQ](#faq)
 
-| Source | Checked against |
-|---|---|
-| Claude Code (CLI and desktop) | real sessions |
-| GitHub Copilot Chat in VS Code | the VS Code source and real session files without messages |
-| Codex CLI | its source code only |
-| OpenCode | its source code only |
-| Cursor | community descriptions of its storage only |
-| ChatGPT (web), from an export | community descriptions of the export format and invented samples only; no real export |
-| Claude (web), from an export | community descriptions of the export format and invented samples only; no real export |
-| ChatGPT, Claude and Gemini (web), through the browser extension | invented HTML only; never run against the live sites or in a real browser |
+</div>
 
-Everything below Claude Code and Copilot has only been tested with made-up
-samples. Expect rough edges, and please report sessions that come out wrong.
-Codex sessions that Codex has compressed (`.jsonl.zst`) are not read yet.
+---
 
-The web sources are not read from disk: they arrive by importing an export file
-(ChatGPT and Claude) or from the browser extension (ChatGPT, Claude and Gemini);
-see "Web chats". The extension is not in any browser store yet.
+## Why Cortex
+
+The context you build up with AI tools ends up scattered across their private storage: a Claude Code session here, a Copilot chat there, a ChatGPT thread in a browser tab. None of it is searchable together, and none of it is yours to read.
+
+Cortex gathers it in one place you control:
+
+- a **folder of plain Markdown notes** (the vault) that you can read yourself, open with [Obsidian](https://obsidian.md/) or any Markdown reader, sync or back up however you like;
+- a **small background program** with a local control panel that keeps the folder up to date;
+- an **MCP server**, so that Claude Code, Cursor, VS Code, Codex CLI and other agents can look up what you discussed with any other tool. All your tools share one memory.
+
+Everything runs on your machine. There is no account and no cloud service. Nothing leaves your computer, unless you switch on the optional summaries (off by default, see [Summaries](#summaries)).
+
+## Features
+
+- **Many sources, one vault.** Claude Code, GitHub Copilot Chat in VS Code, Codex CLI, OpenCode and Cursor are read from disk; ChatGPT and Claude (web) from an export file; ChatGPT, Claude and Gemini (web) through a browser extension.
+- **Runs in the background.** Saves everything once, then checks again every 30 seconds. Starts at login if you want it to (Windows tray icon included).
+- **Local control panel** at `127.0.0.1`: pause and resume, choose the vault, switch sources and projects on and off, import exports, pair the extension, connect your AI tools.
+- **MCP server** (`cortex mcp`) with three read-only tools: `search`, `read` and `recent`.
+- **Plain, durable notes.** One note per conversation, organised by project. You can rename, move or annotate notes; Cortex only rewrites its own block.
+- **Secrets are redacted** before a note is written (private keys, API keys, tokens, passwords, your own patterns).
+- **Optional summaries** of finished conversations, written by an AI tool you already have installed.
+- **Single binary**, no runtime, no telemetry, no update checks.
+
+<div align="center">
+<img src="docs/assets/panel.png" alt="The Cortex control panel showing sources and projects (invented sample data)" width="460">
+<br>
+<sub>The control panel, with invented sample data.</sub>
+</div>
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Sources
+        A1["Claude Code"]
+        A2["Copilot Chat (VS Code)"]
+        A3["Codex CLI"]
+        A4["OpenCode"]
+        A5["Cursor"]
+    end
+    subgraph Web["Web chats"]
+        W1["Browser extension<br/>ChatGPT, Claude, Gemini"]
+        W2["Export import<br/>ChatGPT, Claude"]
+    end
+    A1 & A2 & A3 & A4 & A5 --> C["Cortex<br/>(cortex run)"]
+    W1 --> C
+    W2 --> C
+    C -->|"redact, write"| V[("Vault<br/>Markdown notes")]
+    V -->|"cortex mcp"| M["MCP server<br/>search, read, recent"]
+    M --> G["AI agents<br/>Claude Code, Cursor, VS Code, Codex, ..."]
+    V -.-> O["You<br/>Obsidian or any editor"]
+```
+
+`cortex run` watches the folders where the tools keep their sessions, writes one note per conversation into the vault, and serves the control panel. The browser extension and imports feed the same vault. `cortex mcp` is started by your AI tool when it needs it; it reads the notes straight from the folder and never writes.
+
+## Supported sources
+
+| Source | How it is read | Checked against |
+|---|---|---|
+| Claude Code (CLI and desktop) | session files on disk | real sessions |
+| GitHub Copilot Chat in VS Code | session files on disk | the VS Code source and real session files without messages |
+| Codex CLI | session files on disk, including compressed `.jsonl.zst` sessions | its source code only |
+| OpenCode | its local storage | its source code only |
+| Cursor | its local storage | community descriptions of its storage only |
+| ChatGPT (web) | import of an export | community descriptions of the export format and invented samples only; no real export |
+| Claude (web) | import of an export | community descriptions of the export format and invented samples only; no real export |
+| ChatGPT, Claude and Gemini (web) | browser extension | invented HTML only; never run against the live sites or in a real browser |
+
+Everything below Claude Code and Copilot has only been tested with made-up samples. Expect rough edges, and please [report sessions that come out wrong](https://github.com/marioolf/cortex/issues/new?template=bug_report.md). Gemini has no export that Cortex reads; use the extension.
 
 ## Install
 
-Download the file for your system from the Releases page of the repository, next
-to `checksums.txt` (SHA-256 of every file; compare with `sha256sum -c
-checksums.txt --ignore-missing`, which checks only the files you downloaded, or
-with `Get-FileHash`). Releases are not code-signed yet, so Windows and macOS warn
-about the program; what to expect is described below. Every archive also
-contains `THIRD_PARTY_LICENSES.md`: the licences of the Go modules and the Go
-standard library that are compiled into the program (generated by
-`scripts/licenses.sh`, which CI checks against the committed file).
+> [!NOTE]
+> There is no tagged release yet. Until the first one is published, [build from source](#build-from-source) (one `go build` command).
+
+Download the file for your system from the [Releases page](https://github.com/marioolf/cortex/releases), next to `checksums.txt` (SHA-256 of every file; compare with `sha256sum -c checksums.txt --ignore-missing`, or with `Get-FileHash` on Windows). Releases are not code-signed yet, so Windows and macOS warn about the program. Full details, including the exact warnings, are in [docs/install.md](docs/install.md).
 
 ### Windows
 
-1. Download `cortex_VERSION_windows_amd64.zip` (most PCs; `arm64` for ARM
-   machines such as Copilot+ PCs) and unzip it.
-2. Double-click `cortex.exe`. Windows SmartScreen will most likely stop it with a
-   blue window titled "Windows protected your PC", saying that Microsoft Defender
-   SmartScreen prevented an unrecognized app from starting and that running it
-   might put your PC at risk, with the publisher shown as "Unknown publisher".
-   This happens because the program has no code-signing certificate and is new to
-   Microsoft's reputation system, not because SmartScreen found anything in it.
-   Click "More info", then "Run anyway", to proceed. If you would rather not run
-   a program you cannot verify, build it from source (see "Build from source"):
-   a program you build yourself is also unsigned, but you know where it came from.
-3. Your browser opens the control panel. At the top it says that Cortex is
-   running from the folder you unzipped it to; click "Install". Cortex copies
-   itself to `%LOCALAPPDATA%\Programs\Cortex\cortex.exe`, adds a Start Menu
-   shortcut and registers itself to start at login, then restarts from there and
-   opens a new panel. After that you can delete the downloaded file. (Until you
-   install, Cortex does not register itself to start at login, because that entry
-   would point into your Downloads folder and stop working when the file is
-   deleted.) `cortex.exe install` does the same from a terminal.
+1. Download `cortex_VERSION_windows_amd64.zip` (`arm64` for ARM machines) and unzip it.
+2. Double-click `cortex.exe`. Windows SmartScreen will most likely stop it with "Windows protected your PC" and an "Unknown publisher". This happens because the program has no code-signing certificate and is new to Microsoft's reputation system, not because SmartScreen found anything in it. Click **More info**, then **Run anyway**. If you would rather not run a program you cannot verify, [build it from source](#build-from-source).
+3. Your browser opens the control panel. Click **Install** at the top: Cortex copies itself to `%LOCALAPPDATA%\Programs\Cortex\cortex.exe`, adds a Start Menu shortcut, registers itself to start at login and restarts from there. (`cortex.exe install` does the same from a terminal.)
 
-Cortex has no window of its own: look for its icon in the notification area
-(the taskbar's corner, possibly under the "^" arrow). A click opens the panel;
-the right-click menu has "Open Cortex", a line saying whether it is running or
-paused, "Pause"/"Resume" and "Quit". Pass `-no-tray` to `run` to go without the
-icon; if the icon cannot be created, Cortex keeps running without it and logs
-why.
+Cortex has no window of its own: look for its icon in the notification area. A click opens the panel; the right-click menu has Open Cortex, Pause/Resume and Quit.
 
 ### macOS and Linux
 
-Download `cortex_VERSION_darwin_arm64.tar.gz` (Apple silicon), `darwin_amd64`
-(Intel), `linux_amd64` or `linux_arm64`, extract it, put `cortex` in a folder on
-your `PATH` (for example `~/.local/bin`) and run `cortex`. There is no installer
-on these systems yet (`cortex install` says so and exits with an error). The
-first `run` (the one that finds no config file) registers Cortex to start at
-login for the file's location at that moment, so put the binary in its final
-place before running it the first time (or pass `-no-autostart`). Later, the
-panel's "Start Cortex when I log in" switch registers whichever copy is running
-when you turn it on; if you move the binary, turn it off and on again.
+Download `cortex_VERSION_darwin_arm64.tar.gz` (Apple silicon), `darwin_amd64` (Intel), `linux_amd64` or `linux_arm64`, extract it, put `cortex` in a folder on your `PATH` (for example `~/.local/bin`) and run `cortex`. There is no installer on these systems yet. The first `run` registers Cortex to start at login (a launch agent on macOS, an XDG autostart entry on Linux) for the binary's location at that moment, so put it in its final place first, or pass `-no-autostart`.
 
-macOS Gatekeeper blocks programs that are not signed and notarized by an Apple
-developer when they carry the "quarantine" mark that browsers put on downloads.
-A file extracted from the archive with `tar` in the Terminal does not usually get
-the mark and just runs; one opened from Finder may be refused with a message
-along the lines of "Apple could not verify "cortex" is free of malware". If you
-decide to trust the file, you can allow it in System Settings, Privacy & Security
-("Open Anyway"), or clear the mark yourself with
-`xattr -d com.apple.quarantine /path/to/cortex`. That is your decision to make;
-Cortex does not need it for anything else. (The wording above comes from Apple's
-documentation and has not been checked on a Mac.)
+macOS Gatekeeper blocks programs that are not signed and notarized when they carry the "quarantine" mark that browsers put on downloads. A file extracted with `tar` in the Terminal does not usually get the mark; one opened from Finder may be refused. If you decide to trust the file, allow it in System Settings, Privacy & Security ("Open Anyway"), or run `xattr -d com.apple.quarantine /path/to/cortex`. (This wording comes from Apple's documentation and has not been checked on a Mac.) More in [docs/install.md](docs/install.md#macos-and-linux).
 
-### Update
-
-Cortex never checks for updates or contacts the Internet. To update on Windows,
-download the new release and run the new `cortex.exe` while the installed one is
-running (the normal case). The new file asks the running Cortex which program
-file it runs from; if that is a different file, it asks it to quit (with the
-pairing code from the config file, through `POST /api/ext/quit`), waits up to
-about 10 seconds for the port to be free and starts in its place. Its panel then
-shows the "Install" banner: click it and the new version replaces the installed
-file and restarts from there (`cortex install` does the same from a terminal).
-A running Cortex whose version is strictly newer than the new file (compared as
-dotted numbers; an unknown version such as `dev` on either side does not count)
-is left alone as well, so an old download cannot displace a newer install.
-If the running Cortex is the same file, or cannot be asked (a version older
-than this feature, which does not say where it runs from, or a pairing code
-that does not match), the new file only opens the existing panel and exits, as
-before: in that case quit Cortex from the tray or the panel first, then run the
-new file. On macOS and Linux, replace the `cortex` file; a different file found
-running is replaced the same way, and the login entry points at the file's
-path. The panel's footer and `cortex version` show the version you are running.
-
-### Uninstall
-
-On Windows, `cortex uninstall` (run it from the installed copy or from any other
-one) quits a running Cortex, removes the start-at-login entry, the Start Menu
-shortcut and the installed program. It leaves your settings and always leaves the
-vault. `cortex uninstall -purge` also removes the config file and the log (and
-their folder if that leaves it empty); the vault is never removed, so delete it
-yourself if you want the notes gone. It prints what was removed and what was
-left. `-purge` also removes the `summaries-work` folder next to the config file (if
-it is a symlink, only the link). The program cannot delete itself while it runs,
-so when it is the installed copy, a short-lived helper removes the file a moment
-after it exits. `install` and `uninstall` need only the port and the pairing
-code from the config file: a config that is damaged or has invalid summaries
-settings is reported on stderr and does not stop them. If `install` copies the
-program but the Start Menu shortcut or the login entry then fails, it still
-goes on with the remaining steps and with starting the installed copy, says that
-Cortex was copied and which step failed, and exits with status 1. On macOS and
-Linux, delete the binary and turn off "Start Cortex when I log in" in the panel
-first.
-
-## Build from source
-
-You need Go, at the version given in `go.mod`.
+## Quick start
 
 ```
-go build -o cortex ./cmd/cortex
-./cortex
+cortex            # same as `cortex run`: saves everything, keeps watching, opens the panel
 ```
 
-On Windows, build with `-ldflags "-H windowsgui"` so that starting Cortex at
-login or by double click opens no console window (this is how releases are
-built; `scripts/release.sh VERSION OUTDIR` builds and packages all of them,
-reproducibly: timestamps come from `SOURCE_DATE_EPOCH`, by default the commit time,
-and the extension zip carries the release version, without any `-suffix`, in its
-copy of `manifest.json`):
+1. Start Cortex. It saves every conversation it finds, then checks again every 30 seconds. The panel opens at `http://127.0.0.1:47821/`.
+2. Open the vault (default `~/Cortex`, or **Open folder** in the panel) in Obsidian or any Markdown reader.
+3. [Connect your AI tools](#connect-your-ai-tools-mcp) so that they can search it.
 
-```
-go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
-```
+`cortex sync` does one round and exits. Other commands: `import`, `summarize`, `mcp`, `install`, `uninstall`, `version`. Options for `run` (`-no-browser`, `-port`, `-no-autostart`, `-no-tray`, `-config`) and everything the panel does are described in [docs/build-and-run.md](docs/build-and-run.md#run).
 
-Cortex then runs without a window and is stopped from the tray menu or the
-panel's "Quit Cortex" button. A program built this way does not make PowerShell or an interactive `cmd`
-prompt wait: `cortex.exe sync` typed there can return to the prompt at once,
-print its summary a moment later, and leave no exit status behind. To wait for
-it (in a script, say), use `Start-Process -Wait -NoNewWindow -PassThru .\cortex.exe -ArgumentList 'sync'`
-in PowerShell (the result's `ExitCode` is the status), or `start /wait cortex.exe sync` in `cmd`. `run` writes
-a log to `cortex.log` next to the config file (see Configuration; it is started
-over when it passes 1 MB, and its first line says which version wrote it). The
-log is opened before anything else can fail, so a start that fails (port taken,
-unreadable config) leaves its error there, also on the very first run, which
-creates the config folder for it. A start that fails with no console to print
-on (the Windows build) also shows a message box with the error and the log's path.
-
-## Run
-
-Running `cortex` with no arguments is the same as `cortex run`. It saves every
-conversation once, then checks again every 30 seconds, and opens the control
-panel in your browser. The panel is served at `http://127.0.0.1:47821/` and
-only accepts connections from your own machine. Options for `run`:
-
-- `-no-browser`: do not open the panel.
-- `-port N`: use another port.
-- `-no-autostart`: see below.
-- `-no-tray`: no notification-area icon (Windows).
-- `-config FILE`: use another config file. (`sync`, `import`, `summarize`, `mcp`,
-  `install` and `uninstall` accept it too.)
-
-If Cortex is already running from the same file, starting it again just opens
-the panel. If the running Cortex is a different file (a newer download while the
-installed copy runs), `run` takes over: see "Update". If the running Cortex
-cannot be asked, `run` opens its panel and exits, and the log says why. If the
-port is held by some other program, `run` says so, logs it and exits with an
-error; pass `-port` to use another one. A problem in the config file's
-`summaries` block does not stop `run`: see "Summaries".
-
-The panel shows the last sync and any warnings, and lets you:
-
-- pause and resume capturing;
-- change the vault folder, or open it in your file manager;
-- turn sources on and off (the web ones too);
-- import a ChatGPT or Claude export and pair the browser extension (see "Web
-  chats");
-- turn projects on and off (conversations outside any project are always
-  saved);
-- install Cortex on Windows (a banner at the top, until it is installed);
-- choose whether Cortex starts when you log in (on Windows only from the
-  installed copy: elsewhere the switch is disabled with "Install Cortex first",
-  and the API answers 409; the switch shows "on" only if the registered entry
-  points at the running file);
-- connect your AI tools to the vault (see "Let AI tools read the vault");
-- switch on summaries of finished conversations (see "Summaries"; off by default);
-- quit Cortex.
-
-Turning something off stops capturing it. Notes already written are never
-deleted.
-
-The first time `run` starts (when there is no config file yet), it writes the
-default config and, on macOS and Linux, registers itself to start at login with
-`run -no-browser`: a launch agent in `~/Library/LaunchAgents` on macOS, an XDG
-autostart entry in `~/.config/autostart` on Linux. On Windows it registers
-nothing at that point unless it is already running from its installed place
-(see "Install"): installing writes the registry's `Run` key for the installed
-copy. Pass `-no-autostart` to skip the registration, or turn it on and off in
-the panel at any time.
-
-When Cortex runs on Windows, it also reads the sessions that Linux-side tools
-keep in the home directories of WSL distros that are running at that moment. It does not
-start distros that are stopped.
-
-`cortex sync` does one round and exits, writing one note per session. It exits
-with status 1 if any note could not be written. The default vault is
-`~/Cortex`; use `-vault DIR` to choose another folder for that run without
-saving it. Running it again only updates what changed. A paused Cortex does not
-sync.
-
-## Web chats
-
-ChatGPT, claude.ai and Gemini keep your conversations on their servers, not on
-your disk, so Cortex gets them in two other ways. Both write the same notes as
-every other source (`Chats/chatgpt/`, `Chats/claude-ai/`, `Chats/gemini/`), and
-a conversation that arrives both ways is one note, because the note is found
-by the source and the conversation's id (the same id under two sources is two
-notes). A web note is dated when Cortex first received it if the conversation
-carries no times (the extension cannot see them). The `url:` line in its
-frontmatter is written only when the extension creates the note: a note that
-already existed, for example one made by importing an export, does not get it
-later, even if the extension pushes that conversation afterwards.
-
-### Import an export
-
-ChatGPT: Settings, Data controls, Export data. Claude: Settings, Privacy,
-Export data. You get an email with a zip. An export is a snapshot of that day:
-import a newer one later to bring conversations up to date (those that
-changed are updated, the rest are left as they are). Gemini has no export that
-Cortex reads.
-
-```
-cortex import FILE [-vault DIR] [-config FILE]
-```
-
-`FILE` is the zip as downloaded or the `conversations.json` inside it. It
-prints `N conversations: a created, b updated, c unchanged, d failed, e could
-not be read` and exits with status 1 if any conversation could not be written
-or the file is not a ChatGPT or Claude export. Conversations in the file that
-could not be used are counted in `e`, and the others are saved. The same is
-available in the panel's "Web chats" section ("Import an export": choose the
-file and press Import; files up to 2 GiB, one import at a time).
-
-The file is read as a stream, one conversation at a time, so memory use does
-not depend on the size of the export. These limits protect against hostile or
-broken files: a conversation of more than 64 MiB of JSON is skipped (and
-counted in `e`) without being loaded; more than 64 MiB of blank space between
-two conversations stops the import with an error; one file inside a zip may not
-decompress to more than 2 GiB, nor all the files together to more than 8 GiB. A
-conversation without an id is skipped, and when one export holds the same id
-twice the first one is kept and the later ones are skipped; both are counted in
-`e` and named in the messages printed. Any one message longer than 1,000,000
-characters is cut there, whatever its source (also for collected sessions and the
-extension), and ends with a line `[… N more characters not saved by Cortex]`.
-
-An import is something you ask for by hand, so it ignores Pause and the
-source switches: a paused Cortex, or one with ChatGPT turned off, still saves
-what you import. Importing the same file twice changes nothing.
-
-### Browser extension
-
-The `extension/` folder of this repository (and of a release) is a Chrome, Edge
-and Brave extension that sends the ChatGPT, Claude or Gemini conversation open
-in a tab to Cortex while you chat. It is not in any browser store yet: load it
-unpacked (`chrome://extensions`, Developer mode, Load unpacked, choose the
-folder). See `extension/README.md` for what it reads and sends.
-
-It talks to the running `cortex run` on `127.0.0.1`, and proves itself with a
-pairing code. The first `cortex run` creates the code and saves it in the config
-file as `extension_token`; the panel's "Web chats" section shows it with a Copy
-button, the port, and a Regenerate button (the old code stops working at once).
-Paste the code and the port into the extension's options and press Test
-connection. Until a code exists the extension's routes answer 403 to everybody.
-The code can also stop Cortex (`POST /api/ext/quit`) and tells a caller where
-Cortex runs from (`GET /api/ext/ping` also returns `exe`, the running program's
-path). That is how `install`, `uninstall` and a newer download replace a
-running copy without the panel's token, which only the page knows; anyone who
-can read the config file could end the process anyway. Treat the code like a
-password.
-
-The code is the only thing the extension needs: the panel's own token is not
-involved. Requests that carry an `Origin` other than an extension's are refused
-and no CORS headers are sent, so a web page cannot post conversations even if
-it learned the code. Unlike an import, the extension respects Pause and the
-source switches: while paused, or with a web source off, Cortex answers
-`skipped` and writes nothing. The extension does not count that as saved: its
-popup says "Cortex is paused or this site is turned off in Cortex" and it tries
-again every 60 seconds while the tab is visible, so the conversation is saved
-once you resume. Without a pairing code in its options it says "Not paired
-yet" and does not try at all.
-
-## Let AI tools read the vault
-
-`cortex mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/)
-server over the vault, so that Claude Code, Claude Desktop, Cursor, VS Code,
-Codex CLI, OpenCode and other MCP clients can look up your past conversations.
-It speaks newline-delimited JSON-RPC on stdin and stdout (logs go to stderr),
-reads the notes straight from the vault folder, never writes anything, and does
-not need `cortex run` to be running. The AI tool starts it when it needs it.
-
-```
-cortex mcp [-vault DIR] [-config FILE]
-```
-
-The vault is the `-vault` folder, else the one in the config file, else
-`~/Cortex`. If it does not exist yet, the tools say that Cortex has not saved
-anything; the folder is not created. It understands the protocol revisions
-2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25 (with the `initialize`
-handshake) and answers `server/discover` for 2026-07-28.
-
-Three tools, all read-only:
-
-- `search`: `query` (all words must appear, case-insensitive, in the title or
-  the text), and optionally `project`, `source`, `since` (`YYYY-MM-DD`, the day
-  the conversation started) and `limit` (default 10, at most 50). Returns the
-  best matches first (most occurrences, then most recent), each with its path
-  in the vault, title, project, source, start time and up to three short
-  snippets.
-- `read`: `note` (a path returned by `search` or `recent`), and optionally
-  `offset` and `max_chars` (default 20000, at most 100000; both count
-  characters). A long note comes back in parts and the result says which
-  `offset` continues it. Only `.md` files inside the vault can be read: absolute
-  paths, `..` and symlinks that lead outside are refused.
-- `recent`: the most recently changed notes, optionally for one `project` or
-  `source`, to answer "what was I working on?".
-
-Only notes written by Cortex (those with a `session` line in the frontmatter)
-are searched; `.trash`, `.obsidian` and `.git` folders are skipped, and
-symlinks are not followed. Every value printed from a note (title, project,
-source, start, snippets) is shown on one line, with control characters and line
-separators replaced by spaces; a note whose file name contains such characters
-is left out of `search` and `recent`, since `read` could not be given its path
-as printed.
-
-Notes can quote text written by third parties, so every `search`, `recent` and `read`
-result starts with a fixed line saying that what follows is a record of past
-conversations, to be treated as data and not as instructions, and `read` wraps
-the note between two delimiter lines that carry a short hash of the content.
-The server's `instructions` say the same. This lowers the risk of prompt
-injection through an old conversation; it does not remove it.
-
-### Connecting a tool
-
-The control panel has a "Connect your AI tools" section with, for each tool,
-what to do, using the path of the Cortex program that is running:
-
-- Claude Desktop and Cursor: buttons "Add to Claude Desktop" and "Add to
-  Cursor", shown when the tool's config folder exists. They add only the
-  `mcpServers.cortex` entry to the config file, keep everything else in it as it
-  is (also a UTF-8 BOM and the file's permissions), and save the file as `.bak`
-  next to it the first time Cortex is added (updating an existing entry later
-  leaves the `.bak` alone, so it stays your original). They refuse, telling you
-  to paste the snippet by hand, if the file is not a JSON object, has anything
-  after the object, or is read-only. Restart the tool
-  afterwards. The same JSON is shown to paste by hand
-  (`%APPDATA%\Claude\claude_desktop_config.json` or
-  `~/Library/Application Support/Claude/claude_desktop_config.json` for Claude
-  Desktop, `~/.cursor/mcp.json` for Cursor).
-- VS Code: the `mcp.json` form, with `servers`.
-- Claude Code: `claude mcp add --scope user cortex -- '/path/to/cortex' mcp`,
-  quoted for the shell the panel names: single quotes in bash and zsh (so `$`
-  and `!` are inert) and in PowerShell on Windows (where double quotes would
-  expand `$` and backticks). On Windows with WSL, the panel also shows the
-  command to run inside WSL (bash), which starts the Windows program through
-  `/mnt/c/...` (it assumes your drives are mounted under `/mnt`, the WSL
-  default); it finds its own config, so it needs no `-vault`.
-- Codex CLI: a `[mcp_servers.cortex]` table for `~/.codex/config.toml`.
-- OpenCode: `{"mcp": {"servers": {"cortex": {"type": "local", "command": [...]}}}}`
-  for `opencode.json`, the shape in the published config schema
-  (`https://opencode.ai/config.json`, as read on 2026-11-14, where names placed
-  directly under `mcp` are marked deprecated); it has not been tried against
-  OpenCode itself. The panel also shows the older
-  shape, `{"mcp": {"cortex": {"type": "local", "command": [...], "enabled": true}}}`, for releases that
-  do not know `servers`.
-- A paragraph to paste into `CLAUDE.md`, `AGENTS.md` or your tool's custom
-  instructions, so that agents know the notes exist and treat them as data.
-
-The command is the program's own path, so if you move or rebuild Cortex
-elsewhere, use the button again (it says "Update") or paste the new path.
-
-## Summaries
-
-Optional, and **off by default**. When a conversation has been quiet for a while,
-Cortex can have an AI tool write a short summary of it and store it as a
-"Summary" block at the top of the note, so that you (and the AI agents that read
-the vault) find the gist before the whole conversation.
-
-What leaves your machine: the saved text of the conversation (the note's
-generated block, so already redacted, up to 200,000 characters; for a longer one
-the beginning and the end) is piped to the standard input of the tool you
-choose. That tool is a program on your computer, but it sends the text to its
-own AI provider and uses your account and quota there. Cortex itself contacts
-nothing. Do not switch this on for projects whose conversations must not go to
-that provider.
-
-To enable it, in the panel's "Summaries (optional)" section: pick a tool, tick
-the projects to summarise and turn the switch on. Conversations outside any
-project are never summarised. The panel lists a tool only if its program is
-found on your `PATH`.
-
-| Tool | Command Cortex runs (prompt on stdin, summary on stdout) |
-|---|---|
-| Claude Code | `claude -p --tools "" --disallowedTools "*" --strict-mcp-config --disable-slash-commands --permission-mode dontAsk --no-session-persistence` |
-| Codex CLI | `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --ignore-user-config --color never -` |
-
-The conversation is text written partly by third parties, so the tool must not
-be able to act on instructions hidden in it. The prompt says that the text is a
-record to summarise and not to be obeyed, and the flags above lock the tool down
-as far as its documentation allows: for Claude Code no tools (built-in or MCP),
-no skills and no saved session ([CLI reference](https://code.claude.com/docs/en/cli-reference));
-for Codex a read-only sandbox, no saved session and the user's `config.toml`
-(with its MCP servers) ignored ([command reference](https://learn.chatgpt.com/docs/developer-commands?surface=cli),
-[non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode)). A read-only
-sandbox still lets the program read files, and the Codex page does not say
-whether it blocks the network; the flags were checked against the
-documentation, not against the programs. OpenCode is not offered: its
-documentation does not show a way to run it with tools disabled, so it can be
-used only as a custom command that you vouch for.
-
-The command runs without a shell, in an empty folder (`summaries-work`, next to
-the config file, with symlinks resolved and `PWD` set to it), for at most 5
-minutes, with its output capped at 32 KB; the environment variable
-`CORTEX_SUMMARY=1` is set. It runs in a process group of its own (on Windows
-Cortex runs `taskkill /T /F`), and when it times out or Cortex quits, the tool
-and the processes it started in that group are stopped; a process that
-deliberately detaches itself (a new session, a daemon) is not. Its output is cleaned (invalid UTF-8
-replaced, escape sequences and control characters other than newline and tab
-removed) and passed through the same redaction as the notes, including your
-`redact_patterns`, before it is stored. These tools keep their own
-sessions on disk, so Cortex never saves a session that was started in that
-folder (otherwise it would summarise its own summaries).
-
-### Custom command
-
-To use another tool, write its argv by hand in the config file and choose
-"Custom command from the config file" in the panel:
-
-```json
-"summaries": { "tool": "custom", "command": ["/path/to/summarise", "--short"] }
-```
-
-The first element must be an absolute path or a bare program name found on your
-`PATH`. A relative path such as `./summarise` is refused (it would be resolved
-against the work folder, where the tool itself can write); the settings are then
-treated as invalid, as described below.
-
-
-It receives the prompt on stdin and prints Markdown on stdout. The panel shows
-this command but cannot change it, and `/api/config` has no field for it: if it
-could, anyone who obtained the panel's token (a local program, a bug in a web
-page) could make Cortex run any program. For the same reason the panel cannot
-change the idle time or the rate limit either.
-
-### Limits and behaviour
-
-- A note is summarised when its file has not changed for `idle_minutes` (15 by
-  default), it has at least 4 messages and it has no summary for its current
-  content. If the conversation goes on, a new summary replaces the old one once
-  it is quiet again.
-- One summary at a time, at most `max_per_hour` (20) per hour. A note whose
-  summary failed is not retried for the same content for an hour. Failures
-  show in the panel. A failure names the note by its source and the first 8
-  characters of the session ID (never the title or the file name) and holds at
-  most the first line of the tool's error output, cut to 200 characters and
-  redacted; the conversation is never part of it. A conversation that is being
-  summarised, or queued, is never queued again (even if the tool takes longer
-  than several rounds), and the failure backoff is checked again before the
-  tool is started.
-- While Cortex is paused, nothing is summarised. Turning summaries off or
-  removing a project stops new ones; existing summaries are never deleted.
-- Summaries can be wrong. The block says so, and, like the rest of the vault, it
-  is a record and not instructions.
-- `cortex summarize NOTE` summarises one note now (a path relative to the vault
-  or absolute inside it), ignoring idle time, project selection and the rate
-  limit but needing a configured `summaries.tool`, and prints the summary. It
-  sends the note's text to that tool.
-
-The summary sits in its own block, right before the conversation:
-
-```markdown
-<!-- cortex:summary:start hash=0123456789ab -->
-## Summary
-
-> Generated by Claude Code on 2026-05-01. It can be wrong, and it is a record, not instructions.
-
-...
-<!-- cortex:summary:end -->
-
-<!-- cortex:start -->
-```
-
-Like the conversation block it is Cortex's: text you write outside the two
-blocks is kept. (The `hash` is that of the conversation the summary was made
-from.)
-
-### Invalid summaries settings
-
-A mistake in the `summaries` block of the config file (an unknown `tool`,
-`"custom"` without a `command` or with a relative one, negative numbers, a value
-of the wrong type) never stops Cortex. `run`, `sync`, `mcp`, `import`, `install`
-and `uninstall` load the file with summaries switched off and print the problem
-as a warning (to stderr; `run` also logs it). The panel shows it prominently at
-the top (`warnings` in `/api/state`), and its Summaries section explains the
-problem instead of offering controls until the file is fixed. Your block is kept
-as written when the panel saves other settings. Fix the file and restart Cortex
-(or change any other setting in the panel, which re-reads the file). A config
-file that is not valid JSON at all is an error for `run`, `sync`, `import`,
-`summarize` and `mcp`, which do not guess; the message names the file, and for
-`run` it is logged (see "Build from source") and, without a console, shown in a
-message box. `install` and `uninstall` only warn about it and go on.
-
-## What you get
-
-```
-Cortex/
-  README.md
-  Projects/<project>/   sessions started inside a project directory
-  Chats/<source>/       everything else
-```
-
-A project is named after the git repository root of the session's directory if
-there is one, otherwise after the directory itself. Each note looks like this:
+A note looks like this ([more on the format](docs/notes.md)):
 
 ```markdown
 ---
@@ -560,69 +148,54 @@ generated: true
 ## User · 2026-05-01 11:30
 
 Why does the login page redirect twice?
-
-## Assistant · 2026-05-01 11:30
-
 ...
 <!-- cortex:end -->
 ```
 
-The rules:
+## Connect your AI tools (MCP)
 
-- Cortex only rewrites what is between the markers. Text you add outside them
-  is kept.
-- You can rename or move notes, also into hidden folders such as `.archive`.
-  Cortex finds them again through the `session` line in the frontmatter.
-- If you delete a note, Cortex writes it again the next time its conversation
-  changes or Cortex restarts, with one exception: if Obsidian is set to move
-  deleted files to its own `.trash` folder inside the vault (a setting under
-  "Files and links", "Deleted files"), Cortex treats the note in `.trash` as
-  that session's note, keeps updating it there and does not write a new one,
-  until the trash is emptied. To stop capturing something for good, turn its
-  project or source off in the panel, or remove the markers from the note.
-- If you remove the markers, Cortex leaves that note alone from then on.
-- Tool calls are kept as one line each. Tool output and model thinking are not
-  saved.
+`cortex mcp` is a [Model Context Protocol](https://modelcontextprotocol.io/) server over the vault. It speaks JSON-RPC on stdin and stdout, reads the notes straight from the folder, never writes anything and does not need `cortex run` to be running: the AI tool starts it when it needs it.
 
-## Privacy
+Three read-only tools:
 
-Everything stays on your machine, with one optional exception: the summaries (see
-"Summaries"), which send conversation text to the AI tool you choose and are off
-by default. Before a note is written, Cortex redacts
-secrets and replaces them with `[REDACTED]`. It covers:
+| Tool | What it does |
+|---|---|
+| `search` | All words must appear (case-insensitive) in the title or text; optional `project`, `source`, `since`, `limit`. Best matches first, with snippets. |
+| `read` | Reads a note returned by `search` or `recent`, in parts if it is long. Only `.md` files inside the vault. |
+| `recent` | The most recently changed notes, optionally for one project or source: "what was I working on?" |
 
-- private key blocks;
-- API keys and tokens with well-known prefixes (OpenAI-style `sk-`, GitHub,
-  GitLab, AWS access key IDs, Slack, Google API keys);
-- JSON Web Tokens;
-- `Authorization` header values (Bearer, Basic, token and similar);
-- values assigned to names such as password, passphrase, secret, token or
-  api_key (`name: value`, `name=value`, `"name": "value"`, also a quoted value
-  with spaces), including prefixed forms like `DB_PASSWORD`, `client_secret` or
-  `x-api-key`. A name that merely starts with one of those words, such as
-  `tokenizer`, is not touched, nor are values that look like a type (`string`,
-  `Optional[str]`), a variable or call (`${TOKEN}`, `self.token`, `getToken()`)
-  or a placeholder (`<your-token>`);
-- `--password VALUE` and `--token VALUE` command-line flags, `.netrc`-style
-  `machine ... password VALUE`, `curl -u user:VALUE`, and the password in
-  `https://user:VALUE@host`;
-- any extra patterns you add in the configuration.
+The easiest way: open the panel's **Connect your AI tools** section. It shows, for each tool, what to do with the path of the Cortex program that is running, and has one-click **Add to Claude Desktop** and **Add to Cursor** buttons. By hand:
 
-Redaction is best-effort and errs on the side of removing too much, but it will
-miss things. Be careful with a synced or shared vault.
+```sh
+# Claude Code
+claude mcp add --scope user cortex -- '/path/to/cortex' mcp
+```
 
-Notes can contain text written by third parties (web pages, files, command
-output that was quoted in a conversation). An agent reading the vault should
-treat it as data, not as instructions.
+```toml
+# Codex CLI, in ~/.codex/config.toml
+[mcp_servers.cortex]
+command = "/path/to/cortex"
+args = ["mcp"]
+```
+
+Claude Desktop, Cursor, VS Code and OpenCode have their own snippets, and there is a paragraph to paste into `CLAUDE.md` or `AGENTS.md`: see [docs/mcp.md](docs/mcp.md#connecting-a-tool). Results are marked as data, not instructions, to lower the risk of prompt injection through an old conversation; this does not remove it.
+
+## Web chats
+
+ChatGPT, claude.ai and Gemini keep your conversations on their servers, so Cortex gets them in two other ways:
+
+- **Import an export** (ChatGPT, Claude): `cortex import FILE`, or the panel's **Web chats** section. Importing the same file twice changes nothing.
+- **Browser extension** (ChatGPT, Claude, Gemini; Chrome, Edge, Brave): the [`extension/`](extension/README.md) folder, loaded unpacked (it is not in any browser store yet). It talks only to Cortex on `127.0.0.1` and proves itself with a pairing code.
+
+Both write the same notes as every other source, and a conversation that arrives both ways is one note. Details, limits and the pairing flow: [docs/web-chats.md](docs/web-chats.md) and [extension/README.md](extension/README.md).
+
+## Summaries
+
+Optional, and **off by default**. When a conversation has been quiet for a while, Cortex can have an AI tool write a short summary and store it at the top of the note. The text of the conversation is piped to the tool you choose (Claude Code or Codex CLI, or a custom command you write in the config file), which sends it to its own AI provider and uses your account there. Cortex itself contacts nothing. Do not switch this on for projects whose conversations must not go to that provider. See [docs/summaries.md](docs/summaries.md) for the exact commands, limits and what is locked down.
 
 ## Configuration
 
-Optional. Cortex works without it. The file is a JSON document at the OS config
-directory:
-
-- Linux: `~/.config/cortex/config.json`
-- Windows: `%AppData%\cortex\config.json`
-- macOS: `~/Library/Application Support/cortex/config.json`
+Optional: Cortex works without a config file. It is a JSON document in the OS config directory (`~/.config/cortex/config.json` on Linux, `%AppData%\cortex\config.json` on Windows, `~/Library/Application Support/cortex/config.json` on macOS), and the panel writes it when you change a setting.
 
 ```json
 {
@@ -630,45 +203,88 @@ directory:
   "disabled_sources": ["claude-code"],
   "excluded_projects": ["secret-client"],
   "redact_patterns": ["ACME-[0-9]{8}"],
-  "paused": false,
-  "extension_token": "...",
-  "summaries": {
-    "enabled": false,
-    "tool": "claude",
-    "command": [],
-    "projects": ["myapp"],
-    "idle_minutes": 15,
-    "max_per_hour": 20
-  }
+  "paused": false
 }
 ```
 
-- `vault`: where notes are written (default `~/Cortex`; `sync -vault` overrides
-  it for one run).
-- `disabled_sources`: sources that are not captured.
-- `excluded_projects`: project names whose sessions are not saved.
-- `redact_patterns`: extra regular expressions to redact, on top of the
-  built-in ones.
-- `paused`: capture nothing until set back to `false`.
-- `extension_token`: the browser extension's pairing code. `run` creates it when
-  it is missing; the panel can replace it. Treat it like a password: whoever
-  has it, and can reach `127.0.0.1` from a browser extension or a program, can
-  add notes to your vault.
-- `summaries`: see "Summaries". `enabled` (default `false`), `tool` (`""`,
-  `"claude"`, `"codex"` or `"custom"`), `command` (the argv for `"custom"`, only
-  settable here), `projects` (names of the projects to summarise), `idle_minutes`
-  and `max_per_hour` (0 or missing means 15 and 20; only settable here). A
-  `summaries` block that cannot be used loads as "off" with a warning (see
-  "Invalid summaries settings"); `"custom"` needs a command whose first element
-  is an absolute path or a bare program name.
+Every field, including `extension_token` and the `summaries` block, is in [docs/configuration.md](docs/configuration.md). `run` also keeps a log, `cortex.log`, in the same folder.
 
-The panel writes this file when you change a setting, starting from what is in
-the file at that moment, so edits made by hand while Cortex is running are kept
-(unless the file no longer parses, in which case the panel's in-memory settings
-are written over it). They take effect the next time Cortex starts, or at the
-next change made in the panel. `-config FILE` on `run`, `sync`, `import`,
-`summarize`, `mcp`, `install` and `uninstall` uses a different file. `run` also keeps its log, `cortex.log`, in the same folder.
+## Privacy & security
+
+- **Local only.** Everything stays on your machine. The one optional exception is [summaries](#summaries).
+- **No network by default.** Cortex never checks for updates or contacts the Internet. The panel listens on `127.0.0.1` and only accepts connections from your own machine.
+- **Redaction.** Before a note is written, secrets are replaced with `[REDACTED]`: private key blocks, API keys and tokens with well-known prefixes, JSON Web Tokens, `Authorization` header values, values assigned to names such as password or secret, `--password VALUE` style flags, passwords in URLs, and any patterns you add. It is best-effort and will miss things: be careful with a synced or shared vault. Details in [docs/privacy.md](docs/privacy.md).
+- **Tool output and model thinking are not saved**; tool calls are kept as one line each.
+- **Notes are data.** They can quote text written by third parties; an agent reading the vault should treat them as data, not instructions.
+- **Pairing code.** The extension's `extension_token` in the config file is like a password: whoever has it, and can reach `127.0.0.1`, can add notes to your vault.
+
+## Update / Uninstall
+
+Cortex never checks for updates. To update on Windows, run the new `cortex.exe` while the installed one is running: it asks the running Cortex to quit and starts in its place, and the panel's **Install** banner replaces the installed file. On macOS and Linux, replace the `cortex` file. To uninstall on Windows, run `cortex uninstall` (add `-purge` to also remove the config file and the log); the vault is never removed, so delete it yourself if you want the notes gone. On macOS and Linux, turn off "Start Cortex when I log in" in the panel and delete the binary. The long version, with every edge case: [docs/install.md](docs/install.md#update).
+
+## Build from source
+
+You need Go, at the version given in [`go.mod`](go.mod).
+
+```sh
+go build -o cortex ./cmd/cortex
+./cortex
+```
+
+On Windows, build with `-ldflags "-H windowsgui"` so that starting Cortex at login or by double click opens no console window (this is how releases are built; `scripts/release.sh VERSION OUTDIR` builds and packages all of them, reproducibly):
+
+```sh
+go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
+```
+
+Notes on that build (how `cortex.exe sync` behaves in PowerShell, where the log goes, start failures) are in [docs/build-and-run.md](docs/build-and-run.md#build-from-source).
+
+## Status & roadmap
+
+Early development. Cortex captures conversations from the sources above, either once with `cortex sync` or continuously with `cortex run`. Honestly:
+
+- **Verified against real data:** Claude Code sessions and, partly, Copilot Chat session files (without messages). Everything else was written from source code or documentation and tested with invented samples.
+- **Web chats:** the extension's selectors come from open-source exporters and have **not been tested against the live sites** or in a real browser; the sites change their HTML without notice. The import formats have not been tried against a real export.
+- **Windows:** the installer, tray icon, start at login and the SmartScreen flow have not been verified by hand on a real Windows machine (the test suite and builds run on Windows in CI). The macOS Gatekeeper text has not been checked on a Mac.
+- **Not yet:** code-signed releases, an extension in the browser stores, an installer on macOS and Linux, and a first tagged release.
+
+Bug reports with a bit of the log are the most useful help right now.
+
+## FAQ
+
+**Does anything leave my computer?**
+No, unless you switch on summaries, which send the conversation text to the AI tool you choose. Cortex makes no other network connections: it listens only on `127.0.0.1`.
+
+**Where are my notes?**
+In the vault folder, `~/Cortex` by default. Change it in the panel. Notes are plain Markdown; [here is the format](docs/notes.md).
+
+**Can I edit or move the notes?**
+Yes. Text outside the `cortex:start` and `cortex:end` markers is kept, and renamed or moved notes are found again through the `session` line in the frontmatter.
+
+**What if I delete a note?**
+Cortex writes it again the next time its conversation changes or Cortex restarts. To stop capturing something for good, turn its project or source off in the panel. See [docs/notes.md](docs/notes.md).
+
+**Does Cortex capture my passwords?**
+It redacts common secret formats before writing, but redaction is best-effort. See [docs/privacy.md](docs/privacy.md).
+
+**Why does Windows or macOS warn me about it?**
+Releases are not code-signed yet. See [Install](#install).
+
+**Can I stop it capturing a project?**
+Yes: turn the project off in the panel, or list it in `excluded_projects`. Notes already written are never deleted.
+
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Before sending a change:
+
+```sh
+go vet ./...
+go test ./...
+cd extension && node --test
+```
+
+Please use the [bug report template](https://github.com/marioolf/cortex/issues/new?template=bug_report.md) and remove private content from anything you paste.
 
 ## License
 
-MIT. See `LICENSE`.
+[MIT](LICENSE). The licences of the Go modules and the Go standard library compiled into the program are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) (generated by `scripts/licenses.sh`, which CI checks against the committed file); every release archive contains that file.
