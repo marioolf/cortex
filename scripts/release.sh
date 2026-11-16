@@ -18,7 +18,13 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$2"
 out=$(cd "$2" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# The Windows resources (icon, version information) live in cmd/cortex/*.syso;
+# the committed ones are for version 0.0.0, so the release version is written
+# over them below and the committed files are put back on exit.
+syso="rsrc_windows_amd64.syso rsrc_windows_arm64.syso"
+mkdir "$work/syso"
+for f in $syso; do cp "$root/cmd/cortex/$f" "$work/syso/$f"; done
+trap 'for f in $syso; do cp "$work/syso/$f" "$root/cmd/cortex/$f"; done; rm -rf "$work"' EXIT
 
 # Reproducible archives: every timestamp is SOURCE_DATE_EPOCH (default: the
 # commit time of HEAD), entries are sorted, owners are zero and the time zone is
@@ -30,6 +36,8 @@ fi
 export SOURCE_DATE_EPOCH
 
 cd "$root"
+
+go run ./tools/winres -ico winres/cortex.ico -version "$version" -out-dir cmd/cortex
 
 for goos_arch in windows/amd64 windows/arm64 darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
   goos=${goos_arch%/*}

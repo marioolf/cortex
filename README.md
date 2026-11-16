@@ -237,6 +237,8 @@ On Windows, build with `-ldflags "-H windowsgui"` so that starting Cortex at log
 go build -ldflags "-H windowsgui" -o cortex.exe ./cmd/cortex
 ```
 
+The Windows icon, version information and manifest are embedded from the committed `cmd/cortex/rsrc_windows_*.syso` files (generated for version 0.0.0 with the standard library only: `go run ./tools/winres -ico winres/cortex.ico -version 0.0.0 -out-dir cmd/cortex`; the release script regenerates them with the release version).
+
 Notes on that build (how `cortex.exe sync` behaves in PowerShell, where the log goes, start failures) are in [docs/build-and-run.md](docs/build-and-run.md#build-from-source).
 
 ## Status & roadmap
