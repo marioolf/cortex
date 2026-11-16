@@ -163,6 +163,9 @@ func build(info sessionInfo, msgs []message) *session.Session {
 			switch p.Type {
 			case "text":
 				if t := strings.TrimSpace(p.Text); t != "" && !p.Synthetic && !p.Ignored {
+					if m.role == "user" {
+						t = unquoteRun(t)
+					}
 					parts = append(parts, t)
 				}
 			case "tool":
@@ -192,6 +195,24 @@ func build(info sessionInfo, msgs []message) *session.Session {
 		}
 	}
 	return s
+}
+
+// unquoteRun undoes the quoting `opencode run "some words"` (v1.19.5) applies
+// before storing the prompt: a single argument that contains a space is saved
+// as "some words", with inner quotes escaped as \". The stored text then is
+// not what was typed. Only a text that is wholly one quoted string with no bare
+// quote inside is unwrapped, so a prompt typed in the TUI that merely contains
+// quotes is left alone (one that is entirely a quoted string cannot be told
+// apart, and loses its quotes: harmless in a note).
+func unquoteRun(t string) string {
+	if len(t) < 2 || t[0] != '"' || t[len(t)-1] != '"' {
+		return t
+	}
+	in := strings.ReplaceAll(t[1:len(t)-1], `\"`, "\x00")
+	if strings.Contains(in, `"`) {
+		return t
+	}
+	return strings.ReplaceAll(in, "\x00", `"`)
 }
 
 func toolLine(p partData) string {

@@ -9,6 +9,8 @@
 //     response_item, event_msg or turn_context;
 //  3. like 2, but newer "paginated" rollouts log typed messages as
 //     event_msg/item_completed instead of user_message/agent_message events.
+//     Codex CLI 0.169.0 writes both for every message ("history_mode":
+//     "paginated", a per-line "ordinal"), which Parse deduplicates.
 package codex
 
 import (

@@ -97,18 +97,20 @@ Everything runs on your machine. There is no account and no cloud service. Nothi
 
 ## Supported sources
 
-| Source | How it is read | Checked against |
-|---|---|---|
-| Claude Code (CLI and desktop) | session files on disk | real sessions |
-| GitHub Copilot Chat in VS Code | session files on disk | the VS Code source and real session files without messages |
-| Codex CLI | session files on disk, including compressed `.jsonl.zst` sessions | its source code only |
-| OpenCode | its local storage | its source code only |
-| Cursor | its local storage | community descriptions of its storage only |
-| ChatGPT (web) | import of an export | community descriptions of the export format and invented samples only; no real export |
-| Claude (web) | import of an export | community descriptions of the export format and invented samples only; no real export |
-| ChatGPT, Claude and Gemini (web) | browser extension | invented HTML only; never run against the live sites or in a real browser |
+| Source | How it is read | Validation | Validated against |
+|---|---|---|---|
+| Claude Code (CLI and desktop) | session files on disk | ✅ Real use | the maintainer's own sessions (Claude Code 2.1.x) |
+| Codex CLI | session files on disk, including compressed `.jsonl.zst` | ✅ Real tool | sessions written by Codex CLI 0.169.0 (single turn, resume, tool call, subfolder, `AGENTS.md`, its own `.zst` compression) |
+| OpenCode | its local SQLite database | ✅ Real tool | a database written by OpenCode 1.19.5 (single turn, `--continue`, tool call, subfolder) |
+| GitHub Copilot Chat in VS Code | session files and `session-store.db` | 🟡 Partial | VS Code 1.140 storage on a real machine, but only sessions without messages; message format from the VS Code and Copilot Chat source |
+| Cursor | its local storage | ⚪ Not yet | community descriptions of its storage and invented samples |
+| ChatGPT (web) | import of an export | ⚪ Not yet | community descriptions of the export format and invented samples |
+| Claude (web) | import of an export | ⚪ Not yet | community descriptions of the export format and invented samples |
+| ChatGPT, Claude and Gemini (web) | browser extension | ⚪ Not yet | invented HTML; never run against the live sites |
 
-Everything below Claude Code and Copilot has only been tested with made-up samples. Expect rough edges, and please [report sessions that come out wrong](https://github.com/marioolf/cortex/issues/new?template=bug_report.md). Gemini has no export that Cortex reads; use the extension.
+✅ **Real use**: read from someone's actual day-to-day sessions. ✅ **Real tool**: read from files written by the real, current release of the tool (driven by a local stand-in model, so the content is canned but the format is genuine); these files are kept as regression tests. 🟡 **Partial**: some real files, but not the full format. ⚪ **Not yet**: written from documentation or source code and tested only with invented samples, so expect rough edges.
+
+Helping with a ⚪ or 🟡 row is the most useful contribution right now: if Cortex gets one of your sessions wrong, please [open a bug report](https://github.com/marioolf/cortex/issues/new?template=bug_report.md) (never paste private content). Gemini has no export that Cortex reads; use the extension. Validation dates and details are in [docs/validation.md](docs/validation.md).
 
 ## Connect your AI tools (MCP)
 
@@ -200,7 +202,7 @@ go build -o cortex ./cmd/cortex
 
 Early development. Cortex captures conversations from the sources above, either once with `cortex sync` or continuously with `cortex run`. Honestly:
 
-- **Verified against real data:** Claude Code sessions and, partly, Copilot Chat session files (without messages). Everything else was written from source code or documentation and tested with invented samples.
+- **Verified against real data:** Claude Code (real use), Codex CLI 0.169.0 and OpenCode 1.19.5 (files written by the real tools), and partly Copilot Chat (real storage, but no messages yet). Cursor, the export imports and the browser extension were written from documentation and tested with invented samples. See [Supported sources](#supported-sources) and [docs/validation.md](docs/validation.md).
 - **Web chats:** the extension's selectors come from open-source exporters and have **not been tested against the live sites** or in a real browser; the sites change their HTML without notice. The import formats have not been tried against a real export.
 - **Installers:** `install.sh` and `install.ps1` were tested against locally served fake release assets (download, checksum, refusal of a corrupted file), but never against a published release, and `install.sh` never on macOS. The Windows install step, tray icon and start at login have not been verified by hand on a real Windows machine (the test suite and builds run on Windows in CI). The macOS Gatekeeper text has not been checked on a Mac.
 - **Not yet:** code-signed releases and an extension in the browser stores.
