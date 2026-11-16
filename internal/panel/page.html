@@ -8,47 +8,54 @@
 <style nonce="{{NONCE}}">
 :root {
   color-scheme: light dark;
-  --bg: #f7f7f5; --card: #ffffff; --text: #1d1d1f; --muted: #66666c; --line: #deded9;
-  --accent: #2563d6; --accent-text: #ffffff; --warn: #a15c00; --track: #b9b9b3;
+  --bg: #f4f3f8; --card: #ffffff; --text: #1d1b25; --muted: #62606d; --line: #dcdae6;
+  --accent: #5b2bd9; --accent-text: #ffffff; --accent-ink: #5b2bd9; --accent-soft: #ece6fb;
+  --warn: #a15c00; --track: #8d8a99;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #17171a; --card: #1f1f23; --text: #ececee; --muted: #9a9aa2; --line: #34343a;
-    --accent: #6c9bff; --accent-text: #0b1530; --warn: #e0a64a; --track: #55555c;
+    --bg: #14131a; --card: #1e1d26; --text: #ececf1; --muted: #a09eae; --line: #34323f;
+    --accent: #7a4ff0; --accent-text: #ffffff; --accent-ink: #b9a4ff; --accent-soft: #2c2547;
+    --warn: #e0a64a; --track: #6a6778;
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
-  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
-main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-h1 { margin: 0; font-size: 1.6rem; }
-h2 { margin: 28px 0 8px; font-size: 1rem; text-transform: none; }
+#app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 14px; min-width: 0; }
+h1 { margin: 0; font-size: 1.25rem; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+h2 { margin: 0; font-size: 0.95rem; font-weight: 650; }
+h3 { margin: 12px 0 4px; font-size: 0.92rem; }
 p { margin: 6px 0; }
-.muted { color: var(--muted); font-size: 0.92rem; }
+.muted { color: var(--muted); font-size: 0.9rem; }
 .warn { color: var(--warn); }
 button {
   font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 14px; cursor: pointer;
+  border-radius: 8px; padding: 6px 14px; cursor: pointer;
 }
+button:hover:not(:disabled) { border-color: var(--accent-ink); }
+button:disabled { opacity: 0.6; cursor: default; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
-button:hover { filter: brightness(0.96); }
-:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
 input[type=text] {
   font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 10px; flex: 1 1 14em; min-width: 0;
+  border-radius: 8px; padding: 6px 10px; flex: 1 1 12em; min-width: 0;
 }
+input[type=text]:focus-visible, select:focus-visible { border-color: var(--accent-ink); }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
 .field { display: flex; gap: 8px; flex-wrap: wrap; }
 ul { list-style: none; margin: 0; padding: 0; }
-li, .row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; }
+li, .row { display: flex; align-items: center; gap: 12px; padding: 9px 14px; }
 li + li { border-top: 1px solid var(--line); }
 label.row { cursor: pointer; }
 li > label.row { padding: 0; flex: 1; }
-.name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.meta { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
+.name { flex: 1 1 8em; min-width: 0; overflow-wrap: anywhere; }
+.meta { color: var(--muted); font-size: 0.85rem; text-align: right; flex: 0 1 55%; min-width: 0; }
 .empty { padding: 10px 14px; color: var(--muted); }
 .switch { position: relative; width: 42px; height: 24px; flex: none; }
 .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
@@ -59,44 +66,111 @@ li > label.row { padding: 0; flex: 1; }
 }
 .switch input:checked + .track { background: var(--accent); }
 .switch input:checked + .track::after { transform: translateX(18px); }
-.switch input:focus-visible + .track { outline: 3px solid var(--accent); outline-offset: 2px; }
-details { margin-top: 8px; }
-details ul { padding: 4px 0; }
-details li { padding: 4px 14px; font-size: 0.88rem; overflow-wrap: anywhere; }
-#msg { min-height: 1.4em; }
-.connect-note { margin: 8px 0; }
+.switch input:focus-visible + .track { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+select {
+  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 10px; max-width: 100%;
+}
+input[type=file] { font: inherit; color: var(--text); flex: 1 1 12em; min-width: 0; max-width: 100%; }
+
+/* banners */
+.banner { margin: 0; padding: 10px 14px; border-left: 4px solid var(--warn); }
+.banner p { margin: 0 0 6px; overflow-wrap: anywhere; }
+.banner p:last-child { margin-bottom: 0; }
+#warnings ul li { padding: 2px 0; display: list-item; list-style: disc; margin-left: 1.2em; overflow-wrap: anywhere; }
+#install-msg { min-height: 0; }
+
+/* top bar */
+.topbar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 14px; }
+.status-wrap { flex: 1 1 24em; min-width: 0; display: flex; align-items: center; gap: 4px 14px; flex-wrap: wrap; }
+#status, #result { margin: 0; }
+#status { font-weight: 600; }
+.topbar-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+#version { margin: 0 0 0 6px; white-space: nowrap; }
+#errors { position: relative; }
+#errors > summary { cursor: pointer; color: var(--warn); font-size: 0.9rem; border-radius: 6px; }
+#errors-list { position: absolute; z-index: 5; top: 100%; left: 0; width: min(560px, 80vw); max-height: 50vh; overflow: auto; margin-top: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+#errors-list li { padding: 6px 14px; font-size: 0.85rem; overflow-wrap: anywhere; }
+#msg { margin: 0; min-height: 0; }
+#msg:empty { display: none; }
+
+/* tabs */
+[role=tablist] { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+[role=tab] {
+  background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 8px 8px 0 0;
+  padding: 8px 16px; margin-bottom: -1px; color: var(--muted); font-weight: 600; white-space: nowrap;
+}
+[role=tab]:hover:not(:disabled) { color: var(--text); background: var(--accent-soft); }
+[role=tab][aria-selected=true] { color: var(--accent-ink); border-bottom-color: var(--accent); }
+[role=tab]:focus-visible { outline-offset: -3px; }
+[role=tabpanel] { flex: 1 1 0; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--track) transparent; }
+[role=tabpanel]:focus-visible { outline-offset: -3px; }
+
+/* grids */
+.grid { display: grid; gap: 12px; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.col { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+.panelcard { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.panelcard > h2, .panelhead { padding: 12px 14px 8px; }
+.panelcard > .scroll, .scroll { flex: 1 1 auto; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--track) transparent; }
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--track); border-radius: 4px; }
+.panelcard > ul.scroll { border-top: 1px solid var(--line); }
+.panelcard > ul#chats { border-top: 1px solid var(--line); flex: none; }
+.body { padding: 0 14px 14px; }
+.panelcard.fill { flex: 1 1 auto; }
+.note { padding: 2px 4px; }
+.intro { margin: 0 0 10px; }
+.box label.lbl { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 0.9rem; }
+label.lbl { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 0.9rem; }
+ol.steps { margin: 6px 0; padding-left: 1.3em; }
+ol.steps li { display: list-item; padding: 2px 0; border: 0; }
+#import-msg, #ext-msg, #sum-status, #connect-msg { min-height: 0; overflow-wrap: anywhere; }
+#sum-problem { padding: 0 2px; }
+
+.grid.auto { height: auto; grid-template-rows: none; align-items: start; }
+.cardtitle { padding: 0 14px; margin: 12px 0 4px; font-size: 0.95rem; }
+.projcard { max-height: 60vh; }
+.panelhead > h2 { padding: 0; }
+.nomb { margin-bottom: 0; }
+.ruled { border-top: 1px solid var(--line); }
+
+/* connect */
+#connect { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 12px; align-items: start; }
+#connect > .wide { grid-column: 1 / -1; }
+.connect-note { margin: 0; }
+.pickrow { flex-wrap: wrap; }
+.status { color: var(--muted); font-size: 0.88rem; }
 details.card { padding: 0; }
-details.card > summary { padding: 10px 14px; cursor: pointer; }
+details.card > summary { padding: 10px 14px; cursor: pointer; font-weight: 600; border-radius: 10px; }
 .detail-body { padding: 0 14px 12px; }
 .snippet { margin: 8px 0; }
 .snippet pre {
   margin: 0 0 6px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-  font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 0.82rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto; max-height: 11em;
+  scrollbar-width: thin; scrollbar-color: var(--track) transparent;
 }
-.status { color: var(--muted); font-size: 0.9rem; }
-.pickrow { flex-wrap: wrap; }
-#connect-msg { min-height: 1.4em; }
-.box { padding: 4px 14px 14px; }
-.box + .box { margin-top: 12px; }
-h3 { margin: 14px 0 4px; font-size: 0.95rem; }
-.box label.lbl { display: block; margin: 10px 0 4px; font-weight: 600; font-size: 0.92rem; }
-input[type=file] { font: inherit; color: var(--text); flex: 1 1 14em; min-width: 0; max-width: 100%; }
-ol.steps { margin: 6px 0; padding-left: 1.3em; }
-#import-msg { min-height: 1.4em; overflow-wrap: anywhere; }
-.banner { margin: 0 0 16px; padding: 12px 14px; border-left: 4px solid var(--warn); }
-.banner p { margin: 0 0 8px; overflow-wrap: anywhere; }
-#warnings ul li { padding: 2px 0; display: list-item; list-style: disc; margin-left: 1.2em; overflow-wrap: anywhere; }
-#install-msg { min-height: 1.4em; }
-select {
-  font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 10px; max-width: 100%;
-}
-#sum-status { min-height: 1.4em; overflow-wrap: anywhere; }
+#sum-cmd { max-height: 7em; }
 @media (prefers-reduced-motion: reduce) { .track, .track::after { transition: none; } }
+
+@media (max-width: 899px) {
+  html, body { height: auto; }
+  #app { height: auto; min-height: 100vh; }
+  [role=tabpanel] { overflow: visible; flex: none; }
+  .grid, .grid.three, .grid.two, .grid.auto { display: flex; flex-direction: column; height: auto; }
+  .col { gap: 12px; }
+  .panelcard > .scroll, .scroll { max-height: 60vh; }
+  .status-wrap { flex-basis: 100%; }
+  .topbar-actions { margin-left: 0; }
+  .meta { flex-basis: 45%; }
+  .grid, .grid.auto { align-items: stretch; }
+}
+@media (max-width: 899px) and (min-width: 600px) { #connect { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>
 </head>
 <body>
-<main>
+<div id="app">
   <div id="warnings" class="card banner" role="alert" hidden>
     <p><strong>Cortex found a problem with its settings</strong></p>
     <ul id="warnings-list"></ul>
@@ -106,106 +180,143 @@ select {
     <button id="install-go" type="button" class="primary">Install</button>
     <p id="install-msg" class="muted" role="status" aria-live="polite"></p>
   </div>
-  <header>
-    <h1><svg viewBox="0 0 512 512" width="28" height="28" aria-hidden="true" focusable="false"><defs><linearGradient id="cx-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1640"/><stop offset=".52" stop-color="#5B2BD9"/><stop offset="1" stop-color="#0FB5A6"/></linearGradient></defs><rect width="512" height="512" rx="113" fill="url(#cx-bg)"/><path d="M367.64 174.89A138 138 0 1 0 367.64 337.11" fill="none" stroke="#FFFFFF" stroke-width="64" stroke-linecap="round"/><circle cx="256" cy="256" r="50" fill="#FFFFFF"/></svg>&nbsp;Cortex</h1>
-    <button id="pause" type="button" class="primary">Pause</button>
+  <header class="card topbar">
+    <h1><svg viewBox="0 0 512 512" width="28" height="28" aria-hidden="true" focusable="false"><defs><linearGradient id="cx-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B1640"/><stop offset=".52" stop-color="#5B2BD9"/><stop offset="1" stop-color="#0FB5A6"/></linearGradient></defs><rect width="512" height="512" rx="113" fill="url(#cx-bg)"/><path d="M367.64 174.89A138 138 0 1 0 367.64 337.11" fill="none" stroke="#FFFFFF" stroke-width="64" stroke-linecap="round"/><circle cx="256" cy="256" r="50" fill="#FFFFFF"/></svg>Cortex</h1>
+    <div class="status-wrap">
+      <p id="status" aria-live="polite">Loading...</p>
+      <p id="result" class="muted"></p>
+      <details id="errors" hidden>
+        <summary id="errors-summary"></summary>
+        <ul id="errors-list" class="card"></ul>
+      </details>
+    </div>
+    <div class="topbar-actions">
+      <button id="pause" type="button" class="primary">Pause</button>
+      <button id="quit" type="button">Quit Cortex</button>
+      <p class="muted" id="version"></p>
+    </div>
   </header>
-
-  <p id="status" aria-live="polite">Loading...</p>
-  <p id="result" class="muted"></p>
-  <details id="errors" hidden>
-    <summary id="errors-summary"></summary>
-    <ul id="errors-list" class="card"></ul>
-  </details>
   <p id="msg" class="warn" role="alert"></p>
 
-  <h2>Vault</h2>
-  <div class="field">
-    <input id="vault" type="text" aria-label="Vault folder" spellcheck="false" autocomplete="off">
-    <button id="vault-save" type="button">Save</button>
-    <button id="vault-open" type="button">Open folder</button>
+  <div role="tablist" aria-label="Sections">
+    <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true">Overview</button>
+    <button type="button" role="tab" id="tab-tools" aria-controls="panel-tools" aria-selected="false" tabindex="-1">Connect AI tools</button>
+    <button type="button" role="tab" id="tab-web-chats" aria-controls="panel-web-chats" aria-selected="false" tabindex="-1">Web chats</button>
+    <button type="button" role="tab" id="tab-summaries" aria-controls="panel-summaries" aria-selected="false" tabindex="-1">Summaries</button>
   </div>
 
-  <h2>Sources</h2>
-  <ul id="sources" class="card"></ul>
-
-  <h2>Projects</h2>
-  <ul id="projects" class="card"></ul>
-  <ul id="chats" class="card" hidden></ul>
-
-  <h2>Startup</h2>
-  <div class="card">
-    <label class="row">
-      <span class="name">Start Cortex when I log in</span>
-      <span class="switch"><input id="autostart" type="checkbox" role="switch"><span class="track"></span></span>
-    </label>
-    <p class="muted" id="autostart-hint" hidden></p>
-  </div>
-
-  <h2>Summaries (optional)</h2>
-  <p class="muted" id="sum-intro"></p>
-  <div class="card box">
-    <p id="sum-problem" class="warn" hidden>Summaries are switched off because the summaries settings in the config file are not valid. The problem is described in the warning at the top of this page. Fix the config file and restart Cortex (or change any other setting here); this section comes back then.</p>
-    <div id="sum-controls">
-    <label class="row" id="sum-enabled-row">
-      <span class="name">Summarise conversations of the selected projects</span>
-      <span class="switch"><input id="sum-enabled" type="checkbox" role="switch"><span class="track"></span></span>
-    </label>
-    <p class="muted" id="sum-none" hidden>No tool is available. Install Claude Code (command <code>claude</code>) or Codex CLI (command <code>codex</code>) so that it is found on your PATH, then reload this page. Or write your own command into the config file by hand (see the README, "Summaries"); it cannot be set from this page.</p>
-    <div id="sum-tool-box">
-      <label class="lbl" for="sum-tool">Tool</label>
-      <select id="sum-tool"></select>
-      <p class="muted" id="sum-cmd-label">Command that will run (it receives the conversation on its standard input, and only shows here; it cannot be edited here):</p>
-      <div class="snippet"><pre id="sum-cmd" tabindex="0" aria-labelledby="sum-cmd-label"></pre></div>
+  <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="-1">
+    <div class="grid three">
+      <div class="card panelcard">
+        <h2>Sources</h2>
+        <ul id="sources" class="scroll"></ul>
+      </div>
+      <div class="card panelcard">
+        <h2>Projects</h2>
+        <ul id="projects" class="scroll"></ul>
+        <ul id="chats" hidden></ul>
+      </div>
+      <div class="col">
+        <div class="card panelcard">
+          <h2>Vault</h2>
+          <div class="body">
+            <div class="field">
+              <input id="vault" type="text" aria-label="Vault folder" spellcheck="false" autocomplete="off">
+              <button id="vault-save" type="button">Save</button>
+              <button id="vault-open" type="button">Open folder</button>
+            </div>
+          </div>
+        </div>
+        <div class="card panelcard">
+          <h2>Startup</h2>
+          <label class="row">
+            <span class="name">Start Cortex when I log in</span>
+            <span class="switch"><input id="autostart" type="checkbox" role="switch"><span class="track"></span></span>
+          </label>
+          <p class="muted body" id="autostart-hint" hidden></p>
+        </div>
+        <p class="muted note">Turning something off stops capturing it. Notes already written are never deleted.</p>
+      </div>
     </div>
-    <h3 id="sum-projects-title">Projects to summarise</h3>
-    <p class="muted">Chats without a project are never summarised.</p>
-    <ul id="sum-projects" class="card" aria-labelledby="sum-projects-title"></ul>
+  </section>
+
+  <section role="tabpanel" id="panel-tools" aria-labelledby="tab-tools" tabindex="-1" hidden>
+    <h2>Connect your AI tools</h2>
+    <p class="muted intro">Cortex can let AI tools search and read your notes through an MCP server. The tool starts it when needed; Cortex does not have to be running, and nothing is written to your notes.</p>
+    <p id="connect-msg" class="muted" role="status" aria-live="polite"></p>
+    <div id="connect"></div>
+  </section>
+
+  <section role="tabpanel" id="panel-web-chats" aria-labelledby="tab-web-chats" tabindex="-1" hidden>
+    <h2>Web chats</h2>
+    <p class="muted intro">ChatGPT, Claude and Gemini in the browser keep your conversations on their servers. Cortex can save them from an export file or, while you chat, through a browser extension. Both end up in the vault like any other source and can be switched off under Sources.</p>
+    <div class="grid two auto">
+      <div class="card panelcard">
+        <h3 class="cardtitle">Import an export</h3>
+        <div class="body">
+          <p class="muted">Choose the file you downloaded: the .zip as it is, or the conversations.json inside it. ChatGPT: Settings, Data controls, Export data. Claude: Settings, Privacy, Export data. An export is a one-off snapshot of that day; import a newer one later to bring a conversation up to date. An import is something you ask for, so it ignores Pause and the source switches.</p>
+          <div class="field">
+            <input id="import-file" type="file" accept=".zip,.json,application/zip,application/json" aria-label="Export file (.zip or .json)">
+            <button id="import-go" type="button">Import</button>
+          </div>
+          <p id="import-msg" class="muted" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="card panelcard">
+        <h3 class="cardtitle">Browser extension</h3>
+        <div class="body">
+          <p class="muted">Saves the ChatGPT, Claude or Gemini conversation you have open in Chrome, Edge or Brave to this Cortex while you chat. It sends nothing anywhere else.</p>
+          <label class="lbl" for="ext-code">Pairing code</label>
+          <div class="field">
+            <input id="ext-code" type="text" readonly spellcheck="false" autocomplete="off">
+            <button id="ext-copy" type="button">Copy</button>
+            <button id="ext-regen" type="button">Regenerate</button>
+          </div>
+          <p class="muted" id="ext-port"></p>
+          <p class="muted">To set it up:</p>
+          <ol class="steps muted">
+            <li>Find the extension folder in the Cortex repository or release (not in any browser store yet).</li>
+            <li>Open chrome://extensions (edge://extensions in Edge), turn on Developer mode, press Load unpacked and choose that folder.</li>
+            <li>Open the extension's options, paste the pairing code and the port above, and press Test connection.</li>
+          </ol>
+          <p class="muted">Regenerate replaces the code; the extension stops working until you paste the new one.</p>
+          <p id="ext-msg" class="muted" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section role="tabpanel" id="panel-summaries" aria-labelledby="tab-summaries" tabindex="-1" hidden>
+    <h2>Summaries (optional)</h2>
+    <p class="muted intro" id="sum-intro"></p>
+    <p id="sum-problem" class="warn card box body" hidden>Summaries are switched off because the summaries settings in the config file are not valid. The problem is described in the warning at the top of this page. Fix the config file and restart Cortex (or change any other setting here); this section comes back then.</p>
+    <div id="sum-controls" class="grid two auto">
+      <div class="card panelcard box">
+        <label class="row" id="sum-enabled-row">
+          <span class="name">Summarise conversations of the selected projects</span>
+          <span class="switch"><input id="sum-enabled" type="checkbox" role="switch"><span class="track"></span></span>
+        </label>
+        <div class="body">
+          <p class="muted" id="sum-none" hidden>No tool is available. Install Claude Code (command <code>claude</code>) or Codex CLI (command <code>codex</code>) so that it is found on your PATH, then reload this page. Or write your own command into the config file by hand (see the README, "Summaries"); it cannot be set from this page.</p>
+          <div id="sum-tool-box">
+            <label class="lbl" for="sum-tool">Tool</label>
+            <select id="sum-tool"></select>
+            <p class="muted" id="sum-cmd-label">Command that will run (it receives the conversation on its standard input, and only shows here; it cannot be edited here):</p>
+            <div class="snippet"><pre id="sum-cmd" tabindex="0" aria-labelledby="sum-cmd-label"></pre></div>
+          </div>
+        </div>
+      </div>
+      <div class="card panelcard projcard">
+        <div class="panelhead">
+          <h2 id="sum-projects-title">Projects to summarise</h2>
+          <p class="muted nomb">Chats without a project are never summarised.</p>
+        </div>
+        <ul id="sum-projects" class="scroll ruled" aria-labelledby="sum-projects-title"></ul>
+      </div>
     </div>
     <p id="sum-status" class="muted" role="status" aria-live="polite"></p>
-  </div>
-
-  <h2>Web chats</h2>
-  <p class="muted">ChatGPT, Claude and Gemini in the browser keep your conversations on their servers. Cortex can save them from an export file or, while you chat, through a browser extension. Both end up in the vault like any other source and can be switched off under Sources.</p>
-  <div class="card box">
-    <h3>Import an export</h3>
-    <p class="muted">Choose the file you downloaded: the .zip as it is, or the conversations.json inside it. ChatGPT: Settings, Data controls, Export data. Claude: Settings, Privacy, Export data. An export is a one-off snapshot of that day; import a newer one later to bring a conversation up to date. An import is something you ask for, so it ignores Pause and the source switches.</p>
-    <div class="field">
-      <input id="import-file" type="file" accept=".zip,.json,application/zip,application/json" aria-label="Export file (.zip or .json)">
-      <button id="import-go" type="button">Import</button>
-    </div>
-    <p id="import-msg" class="muted" role="status" aria-live="polite"></p>
-  </div>
-  <div class="card box">
-    <h3>Browser extension</h3>
-    <p class="muted">Saves the ChatGPT, Claude or Gemini conversation you have open in Chrome, Edge or Brave to this Cortex while you chat. It sends nothing anywhere else.</p>
-    <label class="lbl" for="ext-code">Pairing code</label>
-    <div class="field">
-      <input id="ext-code" type="text" readonly spellcheck="false" autocomplete="off">
-      <button id="ext-copy" type="button">Copy</button>
-      <button id="ext-regen" type="button">Regenerate</button>
-    </div>
-    <p class="muted" id="ext-port"></p>
-    <p class="muted">To set it up:</p>
-    <ol class="steps muted">
-      <li>Find the extension folder in the Cortex repository or release (not in any browser store yet).</li>
-      <li>Open chrome://extensions (edge://extensions in Edge), turn on Developer mode, press Load unpacked and choose that folder.</li>
-      <li>Open the extension's options, paste the pairing code and the port above, and press Test connection.</li>
-    </ol>
-    <p class="muted">Regenerate replaces the code; the extension stops working until you paste the new one.</p>
-    <p id="ext-msg" class="muted" role="status" aria-live="polite"></p>
-  </div>
-
-  <h2>Connect your AI tools</h2>
-  <p class="muted">Cortex can let AI tools search and read your notes through an MCP server. The tool starts it when needed; Cortex does not have to be running, and nothing is written to your notes.</p>
-  <p id="connect-msg" class="muted" role="status" aria-live="polite"></p>
-  <div id="connect"></div>
-
-  <p class="muted">Turning something off stops capturing it. Notes already written are never deleted.</p>
-
-  <p><button id="quit" type="button">Quit Cortex</button></p>
-  <p class="muted" id="version"></p>
-</main>
+  </section>
+</div>
 <script nonce="{{NONCE}}">
 "use strict";
 const token = document.querySelector('meta[name="cortex-token"]').content;
@@ -485,7 +596,7 @@ function renderConnect(s) {
   const parts = [];
 
   if (!m.command) {
-    root.replaceChildren(el("p", "Cortex cannot tell where its program file is, so it cannot show the commands.", "warn"));
+    root.replaceChildren(el("p", "Cortex cannot tell where its program file is, so it cannot show the commands.", "warn wide"));
     return;
   }
   const args = m.args;
@@ -493,7 +604,7 @@ function renderConnect(s) {
   // One click, only for tools that are installed.
   const here = m.clients.filter((c) => c.available);
   if (here.length) {
-    const list = el("ul", undefined, "card");
+    const list = el("ul", undefined, "card wide");
     for (const c of here) {
       const li = el("li", undefined, "pickrow");
       const name = el("span", undefined, "name");
@@ -513,7 +624,7 @@ function renderConnect(s) {
       list.append(li);
     }
     parts.push(list);
-    parts.push(el("p", "Cortex keeps a copy of the file as .bak next to it and changes only the cortex entry.", "muted connect-note"));
+    parts.push(el("p", "Cortex keeps a copy of the file as .bak next to it and changes only the cortex entry.", "muted connect-note wide"));
   }
 
   const generic = JSON.stringify({ mcpServers: { cortex: { command: m.command, args: args } } }, null, 2);
@@ -642,6 +753,38 @@ $("install-go").addEventListener("click", async () => {
     $("install-go").disabled = false;
   }
 });
+
+// ---- Tabs ----
+const TABS = ["overview", "tools", "web-chats", "summaries"];
+function showTab(name, focus) {
+  if (!TABS.includes(name)) name = "overview";
+  for (const t of TABS) {
+    const sel = t === name;
+    const tab = $("tab-" + t);
+    tab.setAttribute("aria-selected", sel ? "true" : "false");
+    tab.tabIndex = sel ? 0 : -1;
+    $("panel-" + t).hidden = !sel;
+    if (sel && focus) tab.focus();
+  }
+}
+function tabFromHash() { return location.hash.replace(/^#/, ""); }
+for (const t of TABS) {
+  $("tab-" + t).addEventListener("click", () => { showTab(t); history.replaceState(null, "", "#" + t); });
+  $("tab-" + t).addEventListener("keydown", (e) => {
+    const i = TABS.indexOf(t);
+    let n = -1;
+    if (e.key === "ArrowRight") n = (i + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") n = (i + TABS.length - 1) % TABS.length;
+    else if (e.key === "Home") n = 0;
+    else if (e.key === "End") n = TABS.length - 1;
+    if (n < 0) return;
+    e.preventDefault();
+    showTab(TABS[n], true);
+    history.replaceState(null, "", "#" + TABS[n]);
+  });
+}
+window.addEventListener("hashchange", () => showTab(tabFromHash()));
+showTab(tabFromHash());
 
 load();
 setInterval(load, 5000);

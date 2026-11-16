@@ -51,34 +51,17 @@ Everything runs on your machine. There is no account and no cloud service. Nothi
 - **Single binary**, no runtime, no telemetry, no update checks.
 
 <div align="center">
-<img src="docs/assets/panel.png" alt="The Cortex control panel showing sources and projects (invented sample data)" width="460">
+<img src="docs/assets/panel.png" alt="The Cortex control panel: sources, projects, vault and startup in one window (invented sample data)" width="800">
 <br>
 <sub>The control panel, with invented sample data.</sub>
 </div>
 
 ## How it works
 
-```mermaid
-flowchart LR
-    subgraph Sources
-        A1["Claude Code"]
-        A2["Copilot Chat (VS Code)"]
-        A3["Codex CLI"]
-        A4["OpenCode"]
-        A5["Cursor"]
-    end
-    subgraph Web["Web chats"]
-        W1["Browser extension<br/>ChatGPT, Claude, Gemini"]
-        W2["Export import<br/>ChatGPT, Claude"]
-    end
-    A1 & A2 & A3 & A4 & A5 --> C["Cortex<br/>(cortex run)"]
-    W1 --> C
-    W2 --> C
-    C -->|"redact, write"| V[("Vault<br/>Markdown notes")]
-    V -->|"cortex mcp"| M["MCP server<br/>search, read, recent"]
-    M --> G["AI agents<br/>Claude Code, Cursor, VS Code, Codex, ..."]
-    V -.-> O["You<br/>Obsidian or any editor"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-it-works-dark.svg">
+  <img src="docs/assets/how-it-works.svg" alt="Flow diagram: coding assistants (Claude Code, Copilot Chat in VS Code, Codex CLI, OpenCode, Cursor) and web chats (browser extension, export import) feed Cortex (cortex run), which redacts secrets and writes Markdown notes to the vault. cortex mcp lets AI agents search, read and list recent notes. You can open the vault in Obsidian or any editor." width="900">
+</picture>
 
 `cortex run` watches the folders where the tools keep their sessions, writes one note per conversation into the vault, and serves the control panel. The browser extension and imports feed the same vault. `cortex mcp` is started by your AI tool when it needs it; it reads the notes straight from the folder and never writes.
 
