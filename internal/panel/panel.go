@@ -43,8 +43,12 @@ type Options struct {
 	AutostartEnabled func() bool
 	SetAutostart     func(on bool) error
 	Open             func(target string) error // opens a folder or URL in the OS
-	Quit             func()                    // stops the whole process; nil hides nothing, the request just fails
-	Now              func() time.Time          // clock for the autostart cache; nil means time.Now
+	// Background runs f without blocking the request (default: a goroutine).
+	// Tests pass one they can wait for, so no sync is still writing into a
+	// temporary directory when the test removes it.
+	Background func(f func())
+	Quit       func()           // stops the whole process; nil hides nothing, the request just fails
+	Now        func() time.Time // clock for the autostart cache; nil means time.Now
 
 	// For the "Connect your AI tools" section.
 	Exe          func() (string, error) // path of this program; nil means the real one
@@ -101,6 +105,9 @@ func New(e *engine.Engine, token string, opt Options) http.Handler {
 	}
 	if opt.Open == nil {
 		opt.Open = Open
+	}
+	if opt.Background == nil {
+		opt.Background = func(f func()) { go f() }
 	}
 	if opt.Now == nil {
 		opt.Now = time.Now
@@ -455,7 +462,7 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 		p.autostartEnabled(true) // show the new value now, not in 30 seconds
 	}
 	if changed {
-		go p.e.Sync() // so the panel shows the effect without waiting for the next tick
+		p.opt.Background(func() { p.e.Sync() }) // so the panel shows the effect without waiting for the next tick
 	}
 	writeJSON(w, http.StatusOK, p.snapshot())
 }

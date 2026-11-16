@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -62,6 +63,9 @@ func setupWith(t *testing.T, cfgFn func(*config.Config), optFn func(*Options)) *
 		t.Fatal(err)
 	}
 	e.Sync()
+	// Registered after t.TempDir, so it runs before the directory is removed.
+	var bg sync.WaitGroup
+	t.Cleanup(func() { bg.Wait(); e.Stop() })
 	en := &env{cfgPath: cfgPath, eng: e, vault: cfg.Vault, tmp: filepath.Join(dir, "tmp"), clients: map[string]string{
 		"claude-desktop": filepath.Join(dir, "Claude", "claude_desktop_config.json"),
 		"cursor":         filepath.Join(dir, ".cursor", "mcp.json"),
@@ -77,6 +81,10 @@ func setupWith(t *testing.T, cfgFn func(*config.Config), optFn func(*Options)) *
 		AutostartEnabled: func() bool { return en.autostart },
 		SetAutostart:     func(on bool) error { en.autostart = on; return nil },
 		Open:             func(p string) error { en.opened = append(en.opened, p); return nil },
+		Background: func(f func()) {
+			bg.Add(1)
+			go func() { defer bg.Done(); f() }()
+		},
 	}
 	if optFn != nil {
 		optFn(&opt)

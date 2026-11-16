@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/marioolf/cortex/internal/config"
@@ -193,7 +194,8 @@ func setupFromFile(t *testing.T, cfgPath string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(e.Stop)
+	var bg sync.WaitGroup
+	t.Cleanup(func() { bg.Wait(); e.Stop() })
 	en := &env{cfgPath: cfgPath, eng: e}
 	en.h = New(e, tok, Options{
 		Port: 47999, TempDir: t.TempDir(), ClientPaths: map[string]string{}, GOOS: "linux",
@@ -202,6 +204,10 @@ func setupFromFile(t *testing.T, cfgPath string) *env {
 		AutostartEnabled: func() bool { return false },
 		SetAutostart:     func(bool) error { return nil },
 		Open:             func(string) error { return nil },
+		Background: func(f func()) {
+			bg.Add(1)
+			go func() { defer bg.Done(); f() }()
+		},
 	})
 	return en
 }
